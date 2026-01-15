@@ -1,0 +1,18 @@
+[Unit]
+Description=CAM Tracking Kiosk Server
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/cam-tracking
+Environment="PATH=/usr/bin:/usr/local/bin"
+Environment="CAM_DB_PATH=/home/pi/cam-tracking/cam_tracking.db"
+ExecStart=/usr/bin/python3 /home/pi/cam-tracking/main.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/pi/cam-tracking/cam_tracking.log
+StandardError=append:/home/pi/cam-tracking/cam_tracking.log
+
+[Install]
+WantedBy=multi-user.target

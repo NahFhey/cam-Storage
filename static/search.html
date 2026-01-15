@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAM Tracking - Search</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <nav>
+        <h1>CAM Tracking Kiosk</h1>
+        <div class="nav-links">
+            <a href="/static/index.html">Entry</a>
+            <a href="/static/hot-list.html">Hot List</a>
+            <a href="/static/search.html" class="active">Search</a>
+            <a href="/static/analytics.html">Analytics</a>
+            <a href="/static/admin.html">Admin</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card">
+            <h2 class="card-header">Search Jobs & Tools</h2>
+
+            <div class="form-group">
+                <input
+                    type="text"
+                    id="searchInput"
+                    class="form-input form-input-large"
+                    placeholder="S1793, job title, set, cam..."
+                    autocomplete="off"
+                    autofocus
+                >
+            </div>
+
+            <button id="searchBtn" class="btn btn-primary btn-large btn-block">
+                Search
+            </button>
+        </div>
+
+        <div id="loading" class="spinner hidden"></div>
+
+        <!-- Jobs Results -->
+        <div id="jobsCard" class="card hidden">
+            <h3 class="card-header">Jobs Found</h3>
+            <div id="jobsContent"></div>
+        </div>
+
+        <!-- CAM Items Results -->
+        <div id="camItemsCard" class="card hidden">
+            <h3 class="card-header">Tools Found</h3>
+            <div id="camItemsContent"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        const searchInput = document.getElementById('searchInput');
+        const searchBtn = document.getElementById('searchBtn');
+        const loading = document.getElementById('loading');
+        const jobsCard = document.getElementById('jobsCard');
+        const jobsContent = document.getElementById('jobsContent');
+        const camItemsCard = document.getElementById('camItemsCard');
+        const camItemsContent = document.getElementById('camItemsContent');
+
+        searchBtn.addEventListener('click', handleSearch);
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                handleSearch();
+            }
+        });
+
+        async function handleSearch() {
+            const query = searchInput.value.trim();
+            if (!query) {
+                showError('Please enter a search term');
+                return;
+            }
+
+            loading.classList.remove('hidden');
+            searchBtn.disabled = true;
+            jobsCard.classList.add('hidden');
+            camItemsCard.classList.add('hidden');
+
+            try {
+                const results = await search(query);
+
+                // Display jobs
+                if (results.jobs && results.jobs.length > 0) {
+                    displayJobs(results.jobs);
+                    jobsCard.classList.remove('hidden');
+                }
+
+                // Display cam items
+                if (results.cam_items && results.cam_items.length > 0) {
+                    displayCamItems(results.cam_items);
+                    camItemsCard.classList.remove('hidden');
+                }
+
+                if (results.jobs.length === 0 && results.cam_items.length === 0) {
+                    showError('No results found');
+                }
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                loading.classList.add('hidden');
+                searchBtn.disabled = false;
+            }
+        }
+
+        function displayJobs(jobs) {
+            const html = `
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>S-Number</th>
+                                <th>Title</th>
+                                <th>Priority</th>
+                                <th>Created</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${jobs.map(job => `
+                                <tr>
+                                    <td><strong>S${job.s_number}</strong></td>
+                                    <td>${job.title || '-'}</td>
+                                    <td>${job.priority_base}</td>
+                                    <td>${formatDate(job.created_at)}</td>
+                                    <td>
+                                        <a href="/static/job-detail.html?id=${job.id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
+                                            View
+                                        </a>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            jobsContent.innerHTML = html;
+        }
+
+        async function displayCamItems(camItems) {
+            // Get job info for each cam item
+            const jobsMap = {};
+
+            for (const cam of camItems) {
+                if (!jobsMap[cam.job_id]) {
+                    try {
+                        const jobData = await getJob(cam.job_id);
+                        jobsMap[cam.job_id] = jobData.job;
+                    } catch (error) {
+                        console.error('Failed to load job:', error);
+                    }
+                }
+            }
+
+            const html = `
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Tool</th>
+                                <th>Job</th>
+                                <th>Station</th>
+                                <th>Last Update</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${camItems.map(cam => {
+                                const job = jobsMap[cam.job_id];
+                                return `
+                                    <tr>
+                                        <td><strong>S${job ? job.s_number : cam.job_id} Set${cam.set_no} Cam${cam.cam_no}</strong></td>
+                                        <td>${job ? job.title || '-' : '-'}</td>
+                                        <td>
+                                            <span class="badge ${getStationBadgeClass(cam.status_station)}">
+                                                ${formatStation(cam.status_station)}
+                                            </span>
+                                        </td>
+                                        <td>${formatDateTime(cam.status_updated_at)}</td>
+                                        <td>
+                                            <a href="/static/job-detail.html?id=${cam.job_id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
+                                                View Job
+                                            </a>
+                                        </td>
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            camItemsContent.innerHTML = html;
+        }
+
+        function showError(message) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-error';
+            alertDiv.textContent = message;
+
+            // Clear previous errors
+            document.querySelectorAll('.alert').forEach(el => el.remove());
+
+            const container = document.querySelector('.container');
+            container.insertBefore(alertDiv, container.children[1]);
+
+            setTimeout(() => alertDiv.remove(), 5000);
+        }
+    </script>
+</body>
+</html>

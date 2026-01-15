@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAM Tracking - Analytics</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <nav>
+        <h1>CAM Tracking Kiosk</h1>
+        <div class="nav-links">
+            <a href="/static/index.html">Entry</a>
+            <a href="/static/hot-list.html">Hot List</a>
+            <a href="/static/search.html">Search</a>
+            <a href="/static/analytics.html" class="active">Analytics</a>
+            <a href="/static/admin.html">Admin</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h2 class="card-header" style="margin-bottom: 0;">Analytics Dashboard</h2>
+                <button id="refreshBtn" class="btn btn-primary">Refresh</button>
+            </div>
+
+            <div id="loading" class="spinner"></div>
+
+            <!-- Station Counts -->
+            <div id="stationCountsSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Tools by Station</h3>
+                <div id="stationCounts" class="grid grid-4"></div>
+            </div>
+
+            <!-- Recent Moves -->
+            <div id="recentMovesSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Moves Last 7 Days</h3>
+                <div id="recentMoves"></div>
+            </div>
+
+            <!-- Dwell Times -->
+            <div id="dwellTimesSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Average Dwell Time by Station</h3>
+                <div id="dwellTimes"></div>
+            </div>
+
+            <!-- Sharpen Backlog -->
+            <div id="sharpenBacklogSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Sharpen Backlog</h3>
+                <div id="sharpenBacklog" class="grid grid-2"></div>
+            </div>
+
+            <!-- Cycle Counts -->
+            <div id="cycleCountsSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Top 20 Tools by Cycle Count</h3>
+                <div id="cycleCounts"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        const loading = document.getElementById('loading');
+        const refreshBtn = document.getElementById('refreshBtn');
+
+        refreshBtn.addEventListener('click', loadAnalytics);
+
+        async function loadAnalytics() {
+            loading.classList.remove('hidden');
+            refreshBtn.disabled = true;
+
+            try {
+                await Promise.all([
+                    loadStationCounts(),
+                    loadRecentMoves(),
+                    loadDwellTimes(),
+                    loadSharpenBacklog(),
+                    loadCycleCounts()
+                ]);
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                loading.classList.add('hidden');
+                refreshBtn.disabled = false;
+            }
+        }
+
+        async function loadStationCounts() {
+            const data = await getStationCounts();
+            const container = document.getElementById('stationCounts');
+
+            const html = data.map(item => `
+                <div class="stat-card">
+                    <div class="stat-value">${item.count}</div>
+                    <div class="stat-label">${formatStation(item.station)}</div>
+                </div>
+            `).join('');
+
+            container.innerHTML = html;
+            document.getElementById('stationCountsSection').classList.remove('hidden');
+        }
+
+        async function loadRecentMoves() {
+            const data = await getRecentMoves(7);
+            const container = document.getElementById('recentMoves');
+
+            if (data.length === 0) {
+                container.innerHTML = '<p class="text-center">No moves in the last 7 days</p>';
+            } else {
+                const html = `
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Move Count</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.map(item => `
+                                <tr>
+                                    <td>${formatDate(item.date)}</td>
+                                    <td>${item.count}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+                container.innerHTML = html;
+            }
+
+            document.getElementById('recentMovesSection').classList.remove('hidden');
+        }
+
+        async function loadDwellTimes() {
+            const data = await getDwellTimes();
+            const container = document.getElementById('dwellTimes');
+
+            const html = `
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Station</th>
+                            <th>Average Hours</th>
+                            <th>Tool Count</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${data.map(item => `
+                            <tr>
+                                <td>${formatStation(item.station)}</td>
+                                <td>${item.avg_hours ? item.avg_hours.toFixed(1) : 'N/A'}</td>
+                                <td>${item.count}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+
+            container.innerHTML = html;
+            document.getElementById('dwellTimesSection').classList.remove('hidden');
+        }
+
+        async function loadSharpenBacklog() {
+            const data = await getSharpenBacklog();
+            const container = document.getElementById('sharpenBacklog');
+
+            const html = `
+                <div class="stat-card">
+                    <div class="stat-value">${data.backlog_size || 0}</div>
+                    <div class="stat-label">Tools in Sharpen</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${data.avg_hours_in_sharpen ? data.avg_hours_in_sharpen.toFixed(1) : 'N/A'}</div>
+                    <div class="stat-label">Avg Hours in Sharpen</div>
+                </div>
+            `;
+
+            container.innerHTML = html;
+            document.getElementById('sharpenBacklogSection').classList.remove('hidden');
+        }
+
+        async function loadCycleCounts() {
+            const data = await getCycleCounts(20);
+            const container = document.getElementById('cycleCounts');
+
+            if (data.length === 0) {
+                container.innerHTML = '<p class="text-center">No cycle data available</p>';
+            } else {
+                const html = `
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Tool</th>
+                                <th>Cycles (Active Moves)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.map(item => `
+                                <tr>
+                                    <td>S${item.s_number} Set${item.set_no} Cam${item.cam_no}</td>
+                                    <td>${item.cycle_count}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+                container.innerHTML = html;
+            }
+
+            document.getElementById('cycleCountsSection').classList.remove('hidden');
+        }
+
+        function showError(message) {
+            const container = document.querySelector('.container');
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-error';
+            alertDiv.textContent = message;
+            container.insertBefore(alertDiv, container.children[1]);
+            setTimeout(() => alertDiv.remove(), 5000);
+        }
+
+        // Load on page load
+        loadAnalytics();
+
+        // Auto-refresh every 60 seconds
+        setInterval(loadAnalytics, 60000);
+    </script>
+</body>
+</html>

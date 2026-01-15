@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAM Tracking - Hot List</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <nav>
+        <h1>CAM Tracking Kiosk</h1>
+        <div class="nav-links">
+            <a href="/static/index.html">Entry</a>
+            <a href="/static/hot-list.html" class="active">Hot List</a>
+            <a href="/static/search.html">Search</a>
+            <a href="/static/analytics.html">Analytics</a>
+            <a href="/static/admin.html">Admin</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h2 class="card-header" style="margin-bottom: 0;">Priority Hot List</h2>
+                <button id="refreshBtn" class="btn btn-primary">Refresh</button>
+            </div>
+
+            <p style="color: var(--text-light); margin: 1rem 0;">
+                Jobs sorted by urgency. Urgent jobs need immediate attention.
+            </p>
+
+            <div id="loading" class="spinner hidden"></div>
+
+            <div id="hotListContent"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        const hotListContent = document.getElementById('hotListContent');
+        const loading = document.getElementById('loading');
+        const refreshBtn = document.getElementById('refreshBtn');
+
+        async function loadHotList() {
+            loading.classList.remove('hidden');
+            refreshBtn.disabled = true;
+
+            try {
+                const hotList = await getHotList();
+
+                if (hotList.length === 0) {
+                    hotListContent.innerHTML = '<p class="text-center">No jobs found</p>';
+                    return;
+                }
+
+                const html = `
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Priority</th>
+                                    <th>S-Number</th>
+                                    <th>Title</th>
+                                    <th>Available Sets</th>
+                                    <th>Active</th>
+                                    <th>Sharpen</th>
+                                    <th>Cabinet</th>
+                                    <th>Refill</th>
+                                    <th>Last Update</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${hotList.map(job => `
+                                    <tr>
+                                        <td>
+                                            <span class="badge ${getPriorityBadgeClass(job.priority)}">
+                                                ${job.priority_label}
+                                            </span>
+                                        </td>
+                                        <td><strong>S${job.s_number}</strong></td>
+                                        <td>${job.title || '-'}</td>
+                                        <td class="text-center">${job.available_sets}</td>
+                                        <td class="text-center">${job.active_count}</td>
+                                        <td class="text-center">${job.sharpen_count}</td>
+                                        <td class="text-center">${job.cabinet_count}</td>
+                                        <td class="text-center">${job.refill_count}</td>
+                                        <td>${formatDateTime(job.oldest_update)}</td>
+                                        <td>
+                                            <a href="/static/job-detail.html?id=${job.job_id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
+                                                View
+                                            </a>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+
+                hotListContent.innerHTML = html;
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                loading.classList.add('hidden');
+                refreshBtn.disabled = false;
+            }
+        }
+
+        refreshBtn.addEventListener('click', loadHotList);
+
+        // Load on page load
+        loadHotList();
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadHotList, 30000);
+
+        function showError(message) {
+            hotListContent.innerHTML = `<div class="alert alert-error">${message}</div>`;
+        }
+    </script>
+</body>
+</html>

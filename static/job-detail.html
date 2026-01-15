@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAM Tracking - Job Detail</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <nav>
+        <h1>CAM Tracking Kiosk</h1>
+        <div class="nav-links">
+            <a href="/static/index.html">Entry</a>
+            <a href="/static/hot-list.html">Hot List</a>
+            <a href="/static/search.html">Search</a>
+            <a href="/static/analytics.html">Analytics</a>
+            <a href="/static/admin.html">Admin</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h2 id="jobTitle" class="card-header" style="margin-bottom: 0;">Loading...</h2>
+                <a href="/static/search.html" class="btn btn-secondary">Back to Search</a>
+            </div>
+
+            <div id="loading" class="spinner"></div>
+
+            <div id="jobInfo" class="hidden"></div>
+        </div>
+
+        <div id="camItemsCard" class="card hidden">
+            <h3 class="card-header">CAM Items</h3>
+            <div id="camItemsContent"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const jobId = urlParams.get('id');
+
+        const loading = document.getElementById('loading');
+        const jobTitle = document.getElementById('jobTitle');
+        const jobInfo = document.getElementById('jobInfo');
+        const camItemsCard = document.getElementById('camItemsCard');
+        const camItemsContent = document.getElementById('camItemsContent');
+
+        if (!jobId) {
+            showError('No job ID provided');
+        } else {
+            loadJob();
+        }
+
+        async function loadJob() {
+            loading.classList.remove('hidden');
+
+            try {
+                const data = await getJob(jobId);
+                const job = data.job;
+                const camItems = data.cam_items;
+
+                jobTitle.textContent = `S${job.s_number}`;
+
+                // Display job info
+                const infoHtml = `
+                    <div class="grid grid-2">
+                        <div>
+                            <p><strong>Title:</strong> ${job.title || 'N/A'}</p>
+                            <p><strong>Base Priority:</strong> ${job.priority_base}</p>
+                            <p><strong>Created:</strong> ${formatDateTime(job.created_at)}</p>
+                        </div>
+                        <div>
+                            <p><strong>Notes:</strong> ${job.notes || 'None'}</p>
+                        </div>
+                    </div>
+                `;
+                jobInfo.innerHTML = infoHtml;
+                jobInfo.classList.remove('hidden');
+
+                // Display cam items
+                if (camItems.length > 0) {
+                    displayCamItems(camItems, job);
+                    camItemsCard.classList.remove('hidden');
+                } else {
+                    camItemsContent.innerHTML = '<p class="text-center">No CAM items found for this job.</p>';
+                    camItemsCard.classList.remove('hidden');
+                }
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                loading.classList.add('hidden');
+            }
+        }
+
+        function displayCamItems(camItems, job) {
+            // Group by set
+            const sets = {};
+            camItems.forEach(cam => {
+                if (!sets[cam.set_no]) {
+                    sets[cam.set_no] = [];
+                }
+                sets[cam.set_no].push(cam);
+            });
+
+            let html = '<div class="table-responsive"><table class="table"><thead><tr>';
+            html += '<th>Set</th><th>Cam</th><th>Station</th><th>Last Update</th>';
+            html += '<th>Enter Die Steel</th><th>Exit Die Steel</th><th>Notes</th>';
+            html += '</tr></thead><tbody>';
+
+            Object.keys(sets).sort((a, b) => parseInt(a) - parseInt(b)).forEach(setNo => {
+                const cams = sets[setNo].sort((a, b) => a.cam_no - b.cam_no);
+
+                cams.forEach((cam, index) => {
+                    html += '<tr>';
+                    if (index === 0) {
+                        html += `<td rowspan="${cams.length}"><strong>Set ${setNo}</strong></td>`;
+                    }
+                    html += `<td>${cam.cam_no}</td>`;
+                    html += `<td><span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span></td>`;
+                    html += `<td>${formatDateTime(cam.status_updated_at)}</td>`;
+                    html += `<td>${cam.enter_die_steel || '-'}</td>`;
+                    html += `<td>${cam.exit_die_steel || '-'}</td>`;
+                    html += `<td>${cam.notes || '-'}</td>`;
+                    html += '</tr>';
+                });
+            });
+
+            html += '</tbody></table></div>';
+
+            // Add station summary
+            const stationCounts = camItems.reduce((acc, cam) => {
+                acc[cam.status_station] = (acc[cam.status_station] || 0) + 1;
+                return acc;
+            }, {});
+
+            html += '<div class="grid grid-4 mt-4">';
+            ['active', 'sharpen', 'cabinet', 'refill'].forEach(station => {
+                const count = stationCounts[station] || 0;
+                html += `
+                    <div class="stat-card">
+                        <div class="stat-value">${count}</div>
+                        <div class="stat-label">${formatStation(station)}</div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+
+            camItemsContent.innerHTML = html;
+        }
+
+        function showError(message) {
+            jobInfo.innerHTML = `<div class="alert alert-error">${message}</div>`;
+            jobInfo.classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>

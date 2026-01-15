@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAM Tracking - Entry</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <nav>
+        <h1>CAM Tracking Kiosk</h1>
+        <div class="nav-links">
+            <a href="/static/index.html" class="active">Entry</a>
+            <a href="/static/hot-list.html">Hot List</a>
+            <a href="/static/search.html">Search</a>
+            <a href="/static/analytics.html">Analytics</a>
+            <a href="/static/admin.html">Admin</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card">
+            <h2 class="card-header text-center">Scan or Enter Tool</h2>
+
+            <div id="alerts"></div>
+
+            <div class="form-group">
+                <input
+                    type="text"
+                    id="entryInput"
+                    class="form-input form-input-large"
+                    placeholder="S1793 SET1 CAM2"
+                    autocomplete="off"
+                    autofocus
+                >
+                <p class="text-center mt-2" style="color: var(--text-light);">
+                    Examples: S1793 SET1 CAM2 | 1793-1-2 | S1793-C2-SET1
+                </p>
+            </div>
+
+            <button id="lookupBtn" class="btn btn-primary btn-large btn-block">
+                Lookup Tool
+            </button>
+        </div>
+
+        <!-- Resolution Results -->
+        <div id="resultsCard" class="card hidden">
+            <h3 class="card-header">Tool Found</h3>
+            <div id="resultsContent"></div>
+        </div>
+
+        <!-- Multiple Candidates -->
+        <div id="candidatesCard" class="card hidden">
+            <h3 class="card-header">Select Tool</h3>
+            <ul id="candidatesList" class="selection-list"></ul>
+        </div>
+
+        <!-- Move Screen (shown after selection) -->
+        <div id="moveCard" class="card hidden">
+            <h3 class="card-header text-center">Move Tool</h3>
+
+            <div id="toolInfo" class="text-center mb-4" style="font-size: 1.5rem; font-weight: 700;"></div>
+
+            <div id="currentStation" class="text-center mb-4"></div>
+
+            <div class="station-grid">
+                <button class="btn btn-success btn-large station-btn" data-station="active">
+                    Active
+                </button>
+                <button class="btn btn-warning btn-large station-btn" data-station="sharpen">
+                    Sharpen
+                </button>
+                <button class="btn btn-primary btn-large station-btn" data-station="cabinet">
+                    Cabinet
+                </button>
+                <button class="btn btn-danger btn-large station-btn" data-station="refill">
+                    Refill
+                </button>
+            </div>
+
+            <div class="grid grid-2 mt-4">
+                <button id="undoBtn" class="btn btn-secondary btn-large">
+                    Undo Last Move
+                </button>
+                <button id="cancelBtn" class="btn btn-secondary btn-large">
+                    Cancel
+                </button>
+            </div>
+        </div>
+
+        <!-- Move History (shown after move) -->
+        <div id="historyCard" class="card hidden">
+            <h3 class="card-header">Recent Moves for This Tool</h3>
+            <div id="historyContent"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        let currentCamItem = null;
+        let currentJob = null;
+
+        const entryInput = document.getElementById('entryInput');
+        const lookupBtn = document.getElementById('lookupBtn');
+        const resultsCard = document.getElementById('resultsCard');
+        const resultsContent = document.getElementById('resultsContent');
+        const candidatesCard = document.getElementById('candidatesCard');
+        const candidatesList = document.getElementById('candidatesList');
+        const moveCard = document.getElementById('moveCard');
+        const toolInfo = document.getElementById('toolInfo');
+        const currentStation = document.getElementById('currentStation');
+        const historyCard = document.getElementById('historyCard');
+        const historyContent = document.getElementById('historyContent');
+        const undoBtn = document.getElementById('undoBtn');
+        const cancelBtn = document.getElementById('cancelBtn');
+
+        // Lookup tool on button click or Enter key
+        lookupBtn.addEventListener('click', handleLookup);
+        entryInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                handleLookup();
+            }
+        });
+
+        async function handleLookup() {
+            const entry = entryInput.value.trim();
+            if (!entry) {
+                showError('Please enter a tool identifier');
+                return;
+            }
+
+            lookupBtn.disabled = true;
+            lookupBtn.textContent = 'Looking up...';
+
+            try {
+                const result = await resolveEntry(entry);
+
+                if (result.status === 'exact') {
+                    // Exact match found
+                    showMoveScreen(result.cam_item, result.job);
+                } else if (result.status === 'multiple') {
+                    // Multiple candidates
+                    showCandidates(result.candidates, result.job);
+                } else if (result.status === 'not_found') {
+                    showError(result.message || 'Tool not found');
+                    entryInput.select();
+                } else if (result.status === 'job_not_found') {
+                    showError(`Job not found: S${result.s_number}`);
+                    entryInput.select();
+                }
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                lookupBtn.disabled = false;
+                lookupBtn.textContent = 'Lookup Tool';
+            }
+        }
+
+        function showCandidates(candidates, job) {
+            currentJob = job;
+            candidatesList.innerHTML = '';
+
+            candidates.forEach(cam => {
+                const li = document.createElement('li');
+                li.textContent = `S${job.s_number} Set${cam.set_no} Cam${cam.cam_no} - Currently in ${formatStation(cam.status_station)}`;
+                li.addEventListener('click', () => {
+                    showMoveScreen(cam, job);
+                });
+                candidatesList.appendChild(li);
+            });
+
+            resultsCard.classList.add('hidden');
+            candidatesCard.classList.remove('hidden');
+            moveCard.classList.add('hidden');
+        }
+
+        function showMoveScreen(camItem, job) {
+            currentCamItem = camItem;
+            currentJob = job;
+
+            toolInfo.textContent = `S${job.s_number} Set${camItem.set_no} Cam${camItem.cam_no}`;
+            currentStation.innerHTML = `
+                Current Station: <span class="badge ${getStationBadgeClass(camItem.status_station)}">
+                    ${formatStation(camItem.status_station)}
+                </span>
+            `;
+
+            // Enable/disable station buttons
+            const stationBtns = document.querySelectorAll('.station-btn');
+            stationBtns.forEach(btn => {
+                const station = btn.dataset.station;
+                if (station === camItem.status_station) {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                } else {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                }
+            });
+
+            resultsCard.classList.add('hidden');
+            candidatesCard.classList.add('hidden');
+            moveCard.classList.remove('hidden');
+            historyCard.classList.add('hidden');
+
+            // Load move history
+            loadMoveHistory(camItem.id);
+        }
+
+        async function loadMoveHistory(camItemId) {
+            try {
+                const data = await getCamItem(camItemId);
+                const moves = data.moves.filter(m => !m.undone).slice(0, 5);
+
+                if (moves.length > 0) {
+                    historyContent.innerHTML = `
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>From</th>
+                                    <th>To</th>
+                                    <th>When</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${moves.map(m => `
+                                    <tr>
+                                        <td>${formatStation(m.from_station)}</td>
+                                        <td>${formatStation(m.to_station)}</td>
+                                        <td>${formatDateTime(m.moved_at)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                    historyCard.classList.remove('hidden');
+                }
+            } catch (error) {
+                console.error('Failed to load history:', error);
+            }
+        }
+
+        // Station button clicks
+        document.querySelectorAll('.station-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const toStation = btn.dataset.station;
+                btn.disabled = true;
+                const originalText = btn.textContent;
+                btn.textContent = 'Moving...';
+
+                try {
+                    const result = await moveCam({
+                        cam_item_id: currentCamItem.id,
+                        to_station: toStation
+                    });
+
+                    showSuccess(`Moved to ${formatStation(toStation)}`);
+
+                    if (result.auto_bumped) {
+                        showAlert(
+                            `Auto-bumped Set${result.auto_bumped.set_no} Cam${result.auto_bumped.cam_no} to Sharpen`,
+                            'info'
+                        );
+                    }
+
+                    // Reset UI for next scan
+                    resetUI();
+                } catch (error) {
+                    showError(error.message);
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+                }
+            });
+        });
+
+        // Undo button
+        undoBtn.addEventListener('click', async () => {
+            if (!confirm('Undo the last move for this tool?')) return;
+
+            undoBtn.disabled = true;
+            try {
+                const result = await undoMove(currentCamItem.id);
+                showSuccess(`Undone: reverted to ${formatStation(result.reverted_to_station)}`);
+                resetUI();
+            } catch (error) {
+                showError(error.message);
+                undoBtn.disabled = false;
+            }
+        });
+
+        // Cancel button
+        cancelBtn.addEventListener('click', resetUI);
+
+        function resetUI() {
+            currentCamItem = null;
+            currentJob = null;
+            entryInput.value = '';
+            resultsCard.classList.add('hidden');
+            candidatesCard.classList.add('hidden');
+            moveCard.classList.add('hidden');
+            historyCard.classList.add('hidden');
+            refocusInput('entryInput');
+        }
+
+        function showError(message) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-error';
+            alertDiv.textContent = message;
+            document.getElementById('alerts').innerHTML = '';
+            document.getElementById('alerts').appendChild(alertDiv);
+            setTimeout(() => alertDiv.remove(), 5000);
+        }
+
+        function showSuccess(message) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-success';
+            alertDiv.textContent = message;
+            document.getElementById('alerts').innerHTML = '';
+            document.getElementById('alerts').appendChild(alertDiv);
+            setTimeout(() => alertDiv.remove(), 5000);
+        }
+
+        function showAlert(message, type) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type}`;
+            alertDiv.textContent = message;
+            document.getElementById('alerts').appendChild(alertDiv);
+            setTimeout(() => alertDiv.remove(), 5000);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAM Tracking - Admin</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <nav>
+        <h1>CAM Tracking Kiosk</h1>
+        <div class="nav-links">
+            <a href="/static/index.html">Entry</a>
+            <a href="/static/hot-list.html">Hot List</a>
+            <a href="/static/search.html">Search</a>
+            <a href="/static/analytics.html">Analytics</a>
+            <a href="/static/admin.html" class="active">Admin</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Configuration -->
+        <div class="card">
+            <h2 class="card-header">Configuration</h2>
+            <div id="configAlerts"></div>
+
+            <div class="form-group">
+                <label class="form-label">
+                    <input type="checkbox" id="autoBumpCheckbox" style="width: auto; margin-right: 0.5rem;">
+                    Enable Auto-Bump (when moving to Active, auto-bump existing Active cam to Sharpen)
+                </label>
+            </div>
+
+            <button id="saveConfigBtn" class="btn btn-success">Save Configuration</button>
+        </div>
+
+        <!-- Create Job -->
+        <div class="card">
+            <h2 class="card-header">Create New Job</h2>
+            <div id="jobAlerts"></div>
+
+            <form id="createJobForm">
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label" for="sNumber">S-Number (without S prefix)</label>
+                        <input type="text" id="sNumber" class="form-input" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="jobTitle">Title (optional)</label>
+                        <input type="text" id="jobTitle" class="form-input">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="priorityBase">Base Priority</label>
+                    <input type="number" id="priorityBase" class="form-input" value="0" min="0" max="10">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="jobNotes">Notes (optional)</label>
+                    <textarea id="jobNotes" class="form-textarea" rows="3"></textarea>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-large">Create Job</button>
+            </form>
+        </div>
+
+        <!-- Bulk Create CAM Items -->
+        <div class="card">
+            <h2 class="card-header">Bulk Create CAM Items</h2>
+            <div id="bulkAlerts"></div>
+
+            <form id="bulkCreateForm">
+                <div class="form-group">
+                    <label class="form-label" for="bulkJobId">Job (S-Number)</label>
+                    <select id="bulkJobId" class="form-select" required>
+                        <option value="">Select a job...</option>
+                    </select>
+                </div>
+
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label" for="setNumbers">Set Numbers (comma-separated)</label>
+                        <input type="text" id="setNumbers" class="form-input" placeholder="1,2,3" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="camsPerSet">CAMs per Set</label>
+                        <input type="number" id="camsPerSet" class="form-input" value="4" min="1" max="20" required>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="initialStation">Initial Station</label>
+                    <select id="initialStation" class="form-select" required>
+                        <option value="cabinet" selected>Cabinet</option>
+                        <option value="active">Active</option>
+                        <option value="sharpen">Sharpen</option>
+                        <option value="refill">Refill</option>
+                    </select>
+                </div>
+
+                <button type="submit" class="btn btn-success btn-large">Create CAM Items</button>
+            </form>
+        </div>
+
+        <!-- Export Data -->
+        <div class="card">
+            <h2 class="card-header">Export Data</h2>
+
+            <div class="grid grid-2">
+                <button onclick="exportJobsCSV()" class="btn btn-primary btn-large">
+                    Export Jobs (CSV)
+                </button>
+                <button onclick="exportCamItemsCSV()" class="btn btn-primary btn-large">
+                    Export CAM Items (CSV)
+                </button>
+                <button onclick="exportMovesCSV()" class="btn btn-primary btn-large">
+                    Export Moves (CSV)
+                </button>
+                <button onclick="exportDatabase()" class="btn btn-warning btn-large">
+                    Download Database (SQLite)
+                </button>
+            </div>
+        </div>
+
+        <!-- All Jobs List -->
+        <div class="card">
+            <h2 class="card-header">All Jobs</h2>
+            <button id="refreshJobsBtn" class="btn btn-secondary mb-3">Refresh List</button>
+            <div id="jobsListContent"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        // Configuration
+        const autoBumpCheckbox = document.getElementById('autoBumpCheckbox');
+        const saveConfigBtn = document.getElementById('saveConfigBtn');
+
+        async function loadConfig() {
+            try {
+                const config = await getConfig();
+                autoBumpCheckbox.checked = config.auto_bump_enabled;
+            } catch (error) {
+                showConfigAlert(error.message, 'error');
+            }
+        }
+
+        saveConfigBtn.addEventListener('click', async () => {
+            saveConfigBtn.disabled = true;
+            try {
+                await updateConfig({
+                    auto_bump_enabled: autoBumpCheckbox.checked
+                });
+                showConfigAlert('Configuration saved successfully', 'success');
+            } catch (error) {
+                showConfigAlert(error.message, 'error');
+            } finally {
+                saveConfigBtn.disabled = false;
+            }
+        });
+
+        // Create Job
+        const createJobForm = document.getElementById('createJobForm');
+        createJobForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+
+            try {
+                const jobData = {
+                    s_number: document.getElementById('sNumber').value.trim(),
+                    title: document.getElementById('jobTitle').value.trim() || null,
+                    priority_base: parseInt(document.getElementById('priorityBase').value),
+                    notes: document.getElementById('jobNotes').value.trim() || null
+                };
+
+                await createJob(jobData);
+                showJobAlert(`Job S${jobData.s_number} created successfully`, 'success');
+                createJobForm.reset();
+                loadJobsList();
+                loadJobsForBulk();
+            } catch (error) {
+                showJobAlert(error.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+
+        // Bulk Create CAM Items
+        const bulkCreateForm = document.getElementById('bulkCreateForm');
+        const bulkJobId = document.getElementById('bulkJobId');
+
+        bulkCreateForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+
+            try {
+                const setNumbersStr = document.getElementById('setNumbers').value.trim();
+                const sets = setNumbersStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+
+                if (sets.length === 0) {
+                    throw new Error('Please enter valid set numbers');
+                }
+
+                const bulkData = {
+                    job_id: parseInt(bulkJobId.value),
+                    sets: sets,
+                    cams_per_set: parseInt(document.getElementById('camsPerSet').value),
+                    initial_station: document.getElementById('initialStation').value
+                };
+
+                const result = await createCamItemsBulk(bulkData);
+                showBulkAlert(`Created ${result.created_count} CAM items successfully`, 'success');
+                bulkCreateForm.reset();
+            } catch (error) {
+                showBulkAlert(error.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+
+        // Load jobs for bulk create dropdown
+        async function loadJobsForBulk() {
+            try {
+                const jobs = await getJobs();
+                bulkJobId.innerHTML = '<option value="">Select a job...</option>';
+                jobs.forEach(job => {
+                    const option = document.createElement('option');
+                    option.value = job.id;
+                    option.textContent = `S${job.s_number} - ${job.title || '(no title)'}`;
+                    bulkJobId.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to load jobs:', error);
+            }
+        }
+
+        // Jobs List
+        const refreshJobsBtn = document.getElementById('refreshJobsBtn');
+        const jobsListContent = document.getElementById('jobsListContent');
+
+        refreshJobsBtn.addEventListener('click', loadJobsList);
+
+        async function loadJobsList() {
+            refreshJobsBtn.disabled = true;
+
+            try {
+                const jobs = await getJobs();
+
+                if (jobs.length === 0) {
+                    jobsListContent.innerHTML = '<p class="text-center">No jobs found. Create one above.</p>';
+                    return;
+                }
+
+                const html = `
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>S-Number</th>
+                                <th>Title</th>
+                                <th>Priority</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${jobs.map(job => `
+                                <tr>
+                                    <td><strong>S${job.s_number}</strong></td>
+                                    <td>${job.title || '-'}</td>
+                                    <td>${job.priority_base}</td>
+                                    <td>${formatDate(job.created_at)}</td>
+                                    <td>
+                                        <a href="/static/job-detail.html?id=${job.id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
+                                            View
+                                        </a>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+
+                jobsListContent.innerHTML = html;
+            } catch (error) {
+                jobsListContent.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            } finally {
+                refreshJobsBtn.disabled = false;
+            }
+        }
+
+        // Alert helpers
+        function showConfigAlert(message, type) {
+            showAlertInContainer('configAlerts', message, type);
+        }
+
+        function showJobAlert(message, type) {
+            showAlertInContainer('jobAlerts', message, type);
+        }
+
+        function showBulkAlert(message, type) {
+            showAlertInContainer('bulkAlerts', message, type);
+        }
+
+        function showAlertInContainer(containerId, message, type) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type}`;
+            alertDiv.textContent = message;
+            container.appendChild(alertDiv);
+            setTimeout(() => alertDiv.remove(), 5000);
+        }
+
+        // Initialize
+        loadConfig();
+        loadJobsList();
+        loadJobsForBulk();
+    </script>
+</body>
+</html>
