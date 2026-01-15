@@ -60,15 +60,25 @@ async def move_cam_to_station(
         auto_bump = auto_bump_str.lower() == 'true'
 
     if auto_bump and to_station == 'active':
-        # Find any other cam from same job+set currently in active
-        cursor = await db.execute(
-            """
-            SELECT * FROM cam_items
-            WHERE job_id = ? AND set_no = ? AND status_station = 'active' AND id != ?
-            """,
-            (cam_item['job_id'], cam_item['set_no'], cam_item_id)
-        )
-        existing_active = await cursor.fetchone()
+        # Find any other cam from DIFFERENT set but same die_position currently in active
+        # Multiple cams from the SAME set can be active simultaneously
+        # Only bump if it's a different set with matching die position
+        if cam_item['die_position']:
+            cursor = await db.execute(
+                """
+                SELECT * FROM cam_items
+                WHERE job_id = ?
+                  AND set_no != ?
+                  AND die_position = ?
+                  AND status_station = 'active'
+                  AND id != ?
+                """,
+                (cam_item['job_id'], cam_item['set_no'], cam_item['die_position'], cam_item_id)
+            )
+            existing_active = await cursor.fetchone()
+        else:
+            # If die_position not set, don't auto-bump
+            existing_active = None
 
         if existing_active:
             # Auto-bump existing active cam to sharpen
@@ -198,40 +208,44 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
         }
     }
 
-def calculate_priority(available_sets: int, refill_count: int, priority_base: int) -> Tuple[int, str]:
+def calculate_priority(available_sets: int, refill_count: int, priority_level: str) -> Tuple[int, str]:
     """
     Calculate job priority based on available sets and refill count.
 
     Rules:
-    - Start with priority_base
-    - If available_sets == 1: +1
-    - If available_sets == 0: +3
-    - Add +1 for each cam in refill
+    - Start with priority_level (low, medium, high, urgent, top)
+    - If available_sets == 1: bump up one level
+    - If available_sets == 0: bump up two levels
+    - If refill_count >= 3: bump up one level
+    - Maximum level is 'top'
 
-    Returns: (numeric_priority, label)
+    Returns: (numeric_priority_for_sorting, label)
     """
-    priority = priority_base
+    # Convert level to numeric for calculation
+    priority_value = config.PRIORITY_VALUES.get(priority_level, 0)
 
     # Available sets adjustment
     if available_sets == 0:
-        priority += 3
+        priority_value += 2  # Bump up two levels
     elif available_sets == 1:
-        priority += 1
+        priority_value += 1  # Bump up one level
 
     # Refill count adjustment
-    priority += refill_count
+    if refill_count >= 3:
+        priority_value += 1
 
-    # Get label
-    if priority >= 3:
-        label = "Urgent"
-    elif priority == 2:
-        label = "High"
-    elif priority == 1:
-        label = "Medium"
+    # Cap at top priority
+    priority_value = min(priority_value, 4)  # 4 = top
+
+    # Convert back to label
+    for level, value in config.PRIORITY_VALUES.items():
+        if value == priority_value:
+            label = config.PRIORITY_LABELS[level]
+            break
     else:
-        label = "Low"
+        label = "Top"  # Fallback
 
-    return priority, label
+    return priority_value, label
 
 async def generate_hot_list(db) -> List[Dict]:
     """
@@ -255,7 +269,7 @@ async def generate_hot_list(db) -> List[Dict]:
             j.id,
             j.s_number,
             j.title,
-            j.priority_base,
+            j.priority_level,
             COUNT(DISTINCT CASE WHEN c.status_station != 'refill' THEN c.set_no END) as available_sets,
             COUNT(CASE WHEN c.status_station = 'active' THEN 1 END) as active_count,
             COUNT(CASE WHEN c.status_station = 'sharpen' THEN 1 END) as sharpen_count,
@@ -276,14 +290,14 @@ async def generate_hot_list(db) -> List[Dict]:
         priority, label = calculate_priority(
             available_sets=job_dict['available_sets'],
             refill_count=job_dict['refill_count'],
-            priority_base=job_dict['priority_base']
+            priority_level=job_dict['priority_level'] or 'low'
         )
 
         hot_list.append({
             "job_id": job_dict['id'],
             "s_number": job_dict['s_number'],
             "title": job_dict['title'],
-            "priority_base": job_dict['priority_base'],
+            "priority_level": job_dict['priority_level'],
             "priority": priority,
             "priority_label": label,
             "available_sets": job_dict['available_sets'],

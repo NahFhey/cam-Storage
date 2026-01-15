@@ -14,13 +14,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     s_number TEXT NOT NULL UNIQUE,
     title TEXT,
-    priority_base INTEGER NOT NULL DEFAULT 0,
+    priority_level TEXT NOT NULL DEFAULT 'low' CHECK(priority_level IN ('low', 'medium', 'high', 'urgent', 'top')),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     notes TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_s_number ON jobs(s_number);
-CREATE INDEX IF NOT EXISTS idx_jobs_priority ON jobs(priority_base DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_priority ON jobs(priority_level);
 
 -- CAM items table: individual cutting tools
 CREATE TABLE IF NOT EXISTS cam_items (
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS cam_items (
     job_id INTEGER NOT NULL,
     set_no INTEGER NOT NULL,
     cam_no INTEGER NOT NULL,
+    die_position TEXT CHECK(die_position IN ('upper', 'lower')),
     enter_die_steel TEXT,
     exit_die_steel TEXT,
     status_station TEXT NOT NULL CHECK(status_station IN ('active', 'sharpen', 'cabinet', 'refill')),
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS cam_items (
 CREATE INDEX IF NOT EXISTS idx_cam_items_job ON cam_items(job_id);
 CREATE INDEX IF NOT EXISTS idx_cam_items_station ON cam_items(status_station);
 CREATE INDEX IF NOT EXISTS idx_cam_items_updated ON cam_items(status_updated_at);
+CREATE INDEX IF NOT EXISTS idx_cam_items_die_position ON cam_items(die_position);
 
 -- Moves table: immutable audit log of all station changes
 CREATE TABLE IF NOT EXISTS moves (
@@ -113,6 +115,58 @@ async def set_config_value(key: str, value: str):
         )
         await db.commit()
 
+def migrate_database(db_path: str = None):
+    """Migrate existing database to new schema"""
+    if db_path is None:
+        db_path = config.DATABASE_PATH
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    print("Checking for database migrations...")
+
+    # Check if priority_base exists (old schema)
+    cursor.execute("PRAGMA table_info(jobs)")
+    columns = [col[1] for col in cursor.fetchall()]
+
+    if 'priority_base' in columns:
+        print("  Migrating jobs table: priority_base -> priority_level...")
+        # Add new column
+        try:
+            cursor.execute("ALTER TABLE jobs ADD COLUMN priority_level TEXT DEFAULT 'low'")
+        except sqlite3.OperationalError:
+            pass  # Column might already exist
+
+        # Migrate data: 0=low, 1=medium, 2=high, 3+=urgent
+        cursor.execute("""
+            UPDATE jobs SET priority_level =
+                CASE
+                    WHEN priority_base >= 3 THEN 'urgent'
+                    WHEN priority_base = 2 THEN 'high'
+                    WHEN priority_base = 1 THEN 'medium'
+                    ELSE 'low'
+                END
+            WHERE priority_level IS NULL OR priority_level = 'low'
+        """)
+        print("    Migrated priority values")
+
+    # Check if die_position exists
+    cursor.execute("PRAGMA table_info(cam_items)")
+    columns = [col[1] for col in cursor.fetchall()]
+
+    if 'die_position' not in columns:
+        print("  Adding die_position column to cam_items...")
+        cursor.execute("ALTER TABLE cam_items ADD COLUMN die_position TEXT")
+        print("    Added die_position column (defaults to NULL)")
+
+    conn.commit()
+    conn.close()
+    print("✓ Database migration complete")
+
 if __name__ == "__main__":
     # Allow running this script directly to initialize database
-    init_database()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == 'migrate':
+        migrate_database()
+    else:
+        init_database()

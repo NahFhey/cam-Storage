@@ -52,8 +52,14 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label" for="priorityBase">Base Priority</label>
-                    <input type="number" id="priorityBase" class="form-input" value="0" min="0" max="10">
+                    <label class="form-label" for="priorityLevel">Priority Level</label>
+                    <select id="priorityLevel" class="form-select" required>
+                        <option value="low" selected>Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="urgent">Urgent</option>
+                        <option value="top">Top</option>
+                    </select>
                 </div>
 
                 <div class="form-group">
@@ -101,6 +107,24 @@
 
                 <button type="submit" class="btn btn-success btn-large">Create CAM Items</button>
             </form>
+        </div>
+
+        <!-- Edit CAM Items -->
+        <div class="card">
+            <h2 class="card-header">Edit CAM Items</h2>
+            <div id="camEditAlerts"></div>
+
+            <div class="form-group">
+                <label class="form-label" for="editJobSelect">Select Job</label>
+                <select id="editJobSelect" class="form-select">
+                    <option value="">Select a job to view its CAM items...</option>
+                </select>
+            </div>
+
+            <div id="camItemsList" class="hidden">
+                <h3 style="margin: 1.5rem 0 1rem;">CAM Items</h3>
+                <div id="camItemsContent"></div>
+            </div>
         </div>
 
         <!-- Export Data -->
@@ -172,7 +196,7 @@
                 const jobData = {
                     s_number: document.getElementById('sNumber').value.trim(),
                     title: document.getElementById('jobTitle').value.trim() || null,
-                    priority_base: parseInt(document.getElementById('priorityBase').value),
+                    priority_level: document.getElementById('priorityLevel').value,
                     notes: document.getElementById('jobNotes').value.trim() || null
                 };
 
@@ -272,7 +296,15 @@
                                 <tr>
                                     <td><strong>S${job.s_number}</strong></td>
                                     <td>${job.title || '-'}</td>
-                                    <td>${job.priority_base}</td>
+                                    <td>
+                                        <select class="form-select priority-select" data-job-id="${job.id}" style="padding: 0.5rem;">
+                                            <option value="low" ${(job.priority_level || 'low') === 'low' ? 'selected' : ''}>Low</option>
+                                            <option value="medium" ${job.priority_level === 'medium' ? 'selected' : ''}>Medium</option>
+                                            <option value="high" ${job.priority_level === 'high' ? 'selected' : ''}>High</option>
+                                            <option value="urgent" ${job.priority_level === 'urgent' ? 'selected' : ''}>Urgent</option>
+                                            <option value="top" ${job.priority_level === 'top' ? 'selected' : ''}>Top</option>
+                                        </select>
+                                    </td>
                                     <td>${formatDate(job.created_at)}</td>
                                     <td>
                                         <a href="/static/job-detail.html?id=${job.id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
@@ -286,11 +318,188 @@
                 `;
 
                 jobsListContent.innerHTML = html;
+
+                // Add event listeners for priority selectors
+                document.querySelectorAll('.priority-select').forEach(select => {
+                    select.addEventListener('change', async (e) => {
+                        const jobId = parseInt(e.target.dataset.jobId);
+                        const newPriority = e.target.value;
+                        const originalValue = e.target.dataset.original || e.target.value;
+                        e.target.disabled = true;
+
+                        try {
+                            await updateJob(jobId, { priority_level: newPriority });
+                            e.target.dataset.original = newPriority;
+                            // Show brief success indicator
+                            e.target.style.backgroundColor = '#dcfce7';
+                            setTimeout(() => {
+                                e.target.style.backgroundColor = '';
+                            }, 1000);
+                        } catch (error) {
+                            alert('Failed to update priority: ' + error.message);
+                            e.target.value = originalValue;
+                        } finally {
+                            e.target.disabled = false;
+                        }
+                    });
+                    // Store original value
+                    select.dataset.original = select.value;
+                });
             } catch (error) {
                 jobsListContent.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
             } finally {
                 refreshJobsBtn.disabled = false;
             }
+        }
+
+        // CAM Items Editing
+        const editJobSelect = document.getElementById('editJobSelect');
+        const camItemsList = document.getElementById('camItemsList');
+        const camItemsContent = document.getElementById('camItemsContent');
+
+        editJobSelect.addEventListener('change', async () => {
+            const jobId = editJobSelect.value;
+            if (!jobId) {
+                camItemsList.classList.add('hidden');
+                return;
+            }
+
+            try {
+                const data = await getJob(jobId);
+                displayCamItems(data.cam_items, data.job);
+                camItemsList.classList.remove('hidden');
+            } catch (error) {
+                showCamEditAlert(error.message, 'error');
+            }
+        });
+
+        function displayCamItems(camItems, job) {
+            if (camItems.length === 0) {
+                camItemsContent.innerHTML = '<p>No CAM items for this job. Create them using Bulk Create above.</p>';
+                return;
+            }
+
+            const html = `
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Set</th>
+                            <th>Cam</th>
+                            <th>Die Position</th>
+                            <th>Enter Die Steel</th>
+                            <th>Exit Die Steel</th>
+                            <th>Station</th>
+                            <th>Notes</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${camItems.map(cam => `
+                            <tr data-cam-id="${cam.id}">
+                                <td><strong>${cam.set_no}</strong></td>
+                                <td>${cam.cam_no}</td>
+                                <td>
+                                    <select class="form-select cam-field" data-field="die_position" data-cam-id="${cam.id}" style="padding: 0.5rem;">
+                                        <option value="" ${!cam.die_position ? 'selected' : ''}>-</option>
+                                        <option value="upper" ${cam.die_position === 'upper' ? 'selected' : ''}>Upper</option>
+                                        <option value="lower" ${cam.die_position === 'lower' ? 'selected' : ''}>Lower</option>
+                                    </select>
+                                </td>
+                                <td>
+                                    <input type="text" class="form-input cam-field" data-field="enter_die_steel" data-cam-id="${cam.id}"
+                                        value="${cam.enter_die_steel || ''}" placeholder="e.g. D2" style="padding: 0.5rem;">
+                                </td>
+                                <td>
+                                    <input type="text" class="form-input cam-field" data-field="exit_die_steel" data-cam-id="${cam.id}"
+                                        value="${cam.exit_die_steel || ''}" placeholder="e.g. A2" style="padding: 0.5rem;">
+                                </td>
+                                <td><span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span></td>
+                                <td>
+                                    <input type="text" class="form-input cam-field" data-field="notes" data-cam-id="${cam.id}"
+                                        value="${cam.notes || ''}" placeholder="Notes" style="padding: 0.5rem;">
+                                </td>
+                                <td>
+                                    <button class="btn btn-success save-cam-btn" data-cam-id="${cam.id}" style="padding: 0.5rem 1rem;">
+                                        Save
+                                    </button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+
+            camItemsContent.innerHTML = html;
+
+            // Add event listeners for save buttons
+            document.querySelectorAll('.save-cam-btn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    const camId = parseInt(e.target.dataset.camId);
+                    await saveCamItem(camId);
+                });
+            });
+
+            // Add enter key listener for text inputs
+            document.querySelectorAll('.cam-field[type="text"]').forEach(input => {
+                input.addEventListener('keypress', async (e) => {
+                    if (e.key === 'Enter') {
+                        const camId = parseInt(e.target.dataset.camId);
+                        await saveCamItem(camId);
+                    }
+                });
+            });
+
+            // Add change listener for selects
+            document.querySelectorAll('.cam-field[class*="select"]').forEach(select => {
+                select.addEventListener('change', async (e) => {
+                    const camId = parseInt(e.target.dataset.camId);
+                    await saveCamItem(camId);
+                });
+            });
+        }
+
+        async function saveCamItem(camId) {
+            const row = document.querySelector(`tr[data-cam-id="${camId}"]`);
+            const fields = row.querySelectorAll('.cam-field');
+            const updates = {};
+
+            fields.forEach(field => {
+                const fieldName = field.dataset.field;
+                const value = field.value.trim();
+                updates[fieldName] = value || null;
+            });
+
+            try {
+                await updateCamItem(camId, updates);
+                // Show success
+                row.style.backgroundColor = '#dcfce7';
+                setTimeout(() => {
+                    row.style.backgroundColor = '';
+                }, 1000);
+                showCamEditAlert('CAM item updated successfully', 'success');
+            } catch (error) {
+                showCamEditAlert('Failed to update: ' + error.message, 'error');
+            }
+        }
+
+        // Populate edit job select
+        async function loadJobsForEdit() {
+            try {
+                const jobs = await getJobs();
+                editJobSelect.innerHTML = '<option value="">Select a job to view its CAM items...</option>';
+                jobs.forEach(job => {
+                    const option = document.createElement('option');
+                    option.value = job.id;
+                    option.textContent = `S${job.s_number} - ${job.title || '(no title)'}`;
+                    editJobSelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to load jobs for editing:', error);
+            }
+        }
+
+        function showCamEditAlert(message, type) {
+            showAlertInContainer('camEditAlerts', message, type);
         }
 
         // Alert helpers
@@ -320,6 +529,7 @@
         loadConfig();
         loadJobsList();
         loadJobsForBulk();
+        loadJobsForEdit();
     </script>
 </body>
 </html>

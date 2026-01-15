@@ -27,21 +27,29 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 class JobCreate(BaseModel):
     s_number: str
     title: Optional[str] = None
-    priority_base: int = 0
+    priority_level: str = "low"
     notes: Optional[str] = None
 
 class JobUpdate(BaseModel):
     title: Optional[str] = None
-    priority_base: Optional[int] = None
+    priority_level: Optional[str] = None
     notes: Optional[str] = None
 
 class CamItemCreate(BaseModel):
     job_id: int
     set_no: int
     cam_no: int
+    die_position: Optional[str] = None
     enter_die_steel: Optional[str] = None
     exit_die_steel: Optional[str] = None
     status_station: str = "cabinet"
+    notes: Optional[str] = None
+    eol_cycles_expected: Optional[int] = None
+
+class CamItemUpdate(BaseModel):
+    die_position: Optional[str] = None
+    enter_die_steel: Optional[str] = None
+    exit_die_steel: Optional[str] = None
     notes: Optional[str] = None
     eol_cycles_expected: Optional[int] = None
 
@@ -108,13 +116,20 @@ async def get_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
 @app.post("/api/jobs")
 async def create_job(job: JobCreate, db: aiosqlite.Connection = Depends(get_db)):
     """Create a new job"""
+    # Validate priority level
+    if job.priority_level not in config.PRIORITY_LEVELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid priority level. Must be one of: {', '.join(config.PRIORITY_LEVELS)}"
+        )
+
     try:
         cursor = await db.execute(
             """
-            INSERT INTO jobs (s_number, title, priority_base, notes)
+            INSERT INTO jobs (s_number, title, priority_level, notes)
             VALUES (?, ?, ?, ?)
             """,
-            (job.s_number, job.title, job.priority_base, job.notes)
+            (job.s_number, job.title, job.priority_level, job.notes)
         )
         await db.commit()
         job_id = cursor.lastrowid
@@ -134,9 +149,14 @@ async def update_job(job_id: int, job: JobUpdate, db: aiosqlite.Connection = Dep
     if job.title is not None:
         updates.append("title = ?")
         values.append(job.title)
-    if job.priority_base is not None:
-        updates.append("priority_base = ?")
-        values.append(job.priority_base)
+    if job.priority_level is not None:
+        if job.priority_level not in config.PRIORITY_LEVELS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid priority level. Must be one of: {', '.join(config.PRIORITY_LEVELS)}"
+            )
+        updates.append("priority_level = ?")
+        values.append(job.priority_level)
     if job.notes is not None:
         updates.append("notes = ?")
         values.append(job.notes)
@@ -224,15 +244,21 @@ async def create_cam_item(item: CamItemCreate, db: aiosqlite.Connection = Depend
     if item.status_station not in config.STATIONS:
         raise HTTPException(status_code=400, detail=f"Invalid station: {item.status_station}")
 
+    if item.die_position and item.die_position not in config.DIE_POSITIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid die position. Must be one of: {', '.join(config.DIE_POSITIONS)}"
+        )
+
     try:
         cursor = await db.execute(
             """
             INSERT INTO cam_items
-            (job_id, set_no, cam_no, enter_die_steel, exit_die_steel,
+            (job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
              status_station, notes, eol_cycles_expected)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (item.job_id, item.set_no, item.cam_no, item.enter_die_steel,
+            (item.job_id, item.set_no, item.cam_no, item.die_position, item.enter_die_steel,
              item.exit_die_steel, item.status_station, item.notes, item.eol_cycles_expected)
         )
         await db.commit()
@@ -256,6 +282,55 @@ async def create_cam_item(item: CamItemCreate, db: aiosqlite.Connection = Depend
             status_code=400,
             detail=f"CAM item already exists: job_id={item.job_id}, set={item.set_no}, cam={item.cam_no}"
         )
+
+@app.patch("/api/cam-items/{cam_item_id}")
+async def update_cam_item(cam_item_id: int, item: CamItemUpdate, db: aiosqlite.Connection = Depends(get_db)):
+    """Update a CAM item (die steel info, notes, etc.)"""
+    updates = []
+    values = []
+
+    if item.die_position is not None:
+        if item.die_position not in config.DIE_POSITIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid die position. Must be one of: {', '.join(config.DIE_POSITIONS)}"
+            )
+        updates.append("die_position = ?")
+        values.append(item.die_position)
+
+    if item.enter_die_steel is not None:
+        updates.append("enter_die_steel = ?")
+        values.append(item.enter_die_steel)
+
+    if item.exit_die_steel is not None:
+        updates.append("exit_die_steel = ?")
+        values.append(item.exit_die_steel)
+
+    if item.notes is not None:
+        updates.append("notes = ?")
+        values.append(item.notes)
+
+    if item.eol_cycles_expected is not None:
+        updates.append("eol_cycles_expected = ?")
+        values.append(item.eol_cycles_expected)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    values.append(cam_item_id)
+    await db.execute(
+        f"UPDATE cam_items SET {', '.join(updates)} WHERE id = ?",
+        values
+    )
+    await db.commit()
+
+    cursor = await db.execute("SELECT * FROM cam_items WHERE id = ?", (cam_item_id,))
+    updated_item = await cursor.fetchone()
+
+    if not updated_item:
+        raise HTTPException(status_code=404, detail="CAM item not found")
+
+    return dict(updated_item)
 
 @app.post("/api/cam-items/bulk")
 async def create_cam_items_bulk(bulk: CamItemBulkCreate, db: aiosqlite.Connection = Depends(get_db)):

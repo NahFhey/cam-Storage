@@ -26,20 +26,20 @@ def seed_database(db_path=None):
 
     # Create test jobs
     jobs = [
-        ('1793', 'Front Panel Assembly', 2),
-        ('2104', 'Rear Housing Unit', 1),
-        ('2387', 'Control Box Cover', 0),
-        ('2501', 'Mounting Bracket', 3),
-        ('2645', None, 1),  # No title
+        ('1793', 'Front Panel Assembly', 'high'),
+        ('2104', 'Rear Housing Unit', 'medium'),
+        ('2387', 'Control Box Cover', 'low'),
+        ('2501', 'Mounting Bracket', 'urgent'),
+        ('2645', None, 'medium'),  # No title
     ]
 
     job_ids = {}
 
-    for s_number, title, priority in jobs:
+    for s_number, title, priority_level in jobs:
         try:
             cursor.execute(
-                "INSERT INTO jobs (s_number, title, priority_base) VALUES (?, ?, ?)",
-                (s_number, title, priority)
+                "INSERT INTO jobs (s_number, title, priority_level) VALUES (?, ?, ?)",
+                (s_number, title, priority_level)
             )
             job_ids[s_number] = cursor.lastrowid
             print(f"  Created job S{s_number}")
@@ -53,35 +53,35 @@ def seed_database(db_path=None):
     # Create CAM items for each job
     stations = ['active', 'sharpen', 'cabinet', 'refill']
 
-    # Job 1793: 3 sets, 4 cams each, mixed stations
+    # Job 1793: 3 sets, 4 cams each, mixed stations with die positions
     s_number = '1793'
     if s_number in job_ids:
         cam_configs = [
-            # Set 1
-            (1, 1, 'active'),
-            (1, 2, 'cabinet'),
-            (1, 3, 'cabinet'),
-            (1, 4, 'refill'),
+            # Set 1 (set_no, cam_no, die_position, enter_steel, exit_steel, station)
+            (1, 1, 'upper', 'D2', 'A2', 'active'),
+            (1, 2, 'upper', 'D2', 'A2', 'cabinet'),
+            (1, 3, 'lower', 'H13', 'S7', 'cabinet'),
+            (1, 4, 'lower', 'H13', 'S7', 'refill'),
             # Set 2
-            (2, 1, 'sharpen'),
-            (2, 2, 'cabinet'),
-            (2, 3, 'cabinet'),
-            (2, 4, 'cabinet'),
+            (2, 1, 'upper', 'D2', 'A2', 'sharpen'),
+            (2, 2, 'upper', 'D2', 'A2', 'cabinet'),
+            (2, 3, 'lower', 'H13', 'S7', 'cabinet'),
+            (2, 4, 'lower', 'H13', 'S7', 'cabinet'),
             # Set 3
-            (3, 1, 'cabinet'),
-            (3, 2, 'cabinet'),
-            (3, 3, 'sharpen'),
-            (3, 4, 'refill'),
+            (3, 1, 'upper', 'D2', 'A2', 'cabinet'),
+            (3, 2, 'upper', 'D2', 'A2', 'cabinet'),
+            (3, 3, 'lower', 'H13', 'S7', 'sharpen'),
+            (3, 4, 'lower', 'H13', 'S7', 'refill'),
         ]
 
-        for set_no, cam_no, station in cam_configs:
+        for set_no, cam_no, die_pos, enter_steel, exit_steel, station in cam_configs:
             try:
                 cursor.execute(
                     """
-                    INSERT INTO cam_items (job_id, set_no, cam_no, status_station)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO cam_items (job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel, status_station)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (job_ids[s_number], set_no, cam_no, station)
+                    (job_ids[s_number], set_no, cam_no, die_pos, enter_steel, exit_steel, station)
                 )
                 cam_item_id = cursor.lastrowid
 

@@ -77,6 +77,13 @@ async function createCamItem(itemData) {
     });
 }
 
+async function updateCamItem(camItemId, updates) {
+    return apiCall(`/cam-items/${camItemId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updates)
+    });
+}
+
 async function createCamItemsBulk(bulkData) {
     return apiCall('/cam-items/bulk', {
         method: 'POST',
