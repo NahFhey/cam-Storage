@@ -169,7 +169,28 @@
 
             candidates.forEach(cam => {
                 const li = document.createElement('li');
-                li.textContent = `S${job.s_number} Set${cam.set_no} Cam${cam.cam_no} - Currently in ${formatStation(cam.status_station)}`;
+
+                // Build text with die position and orientation
+                let camText = `S${job.s_number} Set${cam.set_no} Cam${cam.cam_no}`;
+                if (cam.die_position) {
+                    camText += ` (${cam.die_position.toUpperCase()})`;
+                }
+                if (cam.enter_die_steel) {
+                    camText += ` - ${cam.enter_die_steel}`;
+                }
+                camText += ` - Currently in ${formatStation(cam.status_station)}`;
+
+                li.textContent = camText;
+
+                // Color-code based on status
+                const stationColors = {
+                    'active': '#dcfce7',    // green
+                    'sharpen': '#fed7aa',   // orange
+                    'cabinet': '#dbeafe',   // blue
+                    'refill': '#fecaca'     // red
+                };
+                li.style.backgroundColor = stationColors[cam.status_station] || '#f3f4f6';
+
                 li.addEventListener('click', () => {
                     showMoveScreen(cam, job);
                 });
