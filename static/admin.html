@@ -52,17 +52,6 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label" for="priorityLevel">Priority Level</label>
-                    <select id="priorityLevel" class="form-select" required>
-                        <option value="low" selected>Low</option>
-                        <option value="medium">Medium</option>
-                        <option value="high">High</option>
-                        <option value="urgent">Urgent</option>
-                        <option value="top">Top</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
                     <label class="form-label" for="jobNotes">Notes (optional)</label>
                     <textarea id="jobNotes" class="form-textarea" rows="3"></textarea>
                 </div>
@@ -196,7 +185,6 @@
                 const jobData = {
                     s_number: document.getElementById('sNumber').value.trim(),
                     title: document.getElementById('jobTitle').value.trim() || null,
-                    priority_level: document.getElementById('priorityLevel').value,
                     notes: document.getElementById('jobNotes').value.trim() || null
                 };
 
@@ -406,12 +394,18 @@
                                     </select>
                                 </td>
                                 <td>
-                                    <input type="text" class="form-input cam-field" data-field="enter_die_steel" data-cam-id="${cam.id}"
-                                        value="${cam.enter_die_steel || ''}" placeholder="e.g. D2" style="padding: 0.5rem;">
+                                    <select class="form-select cam-field" data-field="enter_die_steel" data-cam-id="${cam.id}" style="padding: 0.5rem;">
+                                        <option value="" ${!cam.enter_die_steel ? 'selected' : ''}>-</option>
+                                        <option value="enter" ${cam.enter_die_steel === 'enter' ? 'selected' : ''}>Enter</option>
+                                        <option value="exit" ${cam.enter_die_steel === 'exit' ? 'selected' : ''}>Exit</option>
+                                    </select>
                                 </td>
                                 <td>
-                                    <input type="text" class="form-input cam-field" data-field="exit_die_steel" data-cam-id="${cam.id}"
-                                        value="${cam.exit_die_steel || ''}" placeholder="e.g. A2" style="padding: 0.5rem;">
+                                    <select class="form-select cam-field" data-field="exit_die_steel" data-cam-id="${cam.id}" style="padding: 0.5rem;">
+                                        <option value="" ${!cam.exit_die_steel ? 'selected' : ''}>-</option>
+                                        <option value="enter" ${cam.exit_die_steel === 'enter' ? 'selected' : ''}>Enter</option>
+                                        <option value="exit" ${cam.exit_die_steel === 'exit' ? 'selected' : ''}>Exit</option>
+                                    </select>
                                 </td>
                                 <td><span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span></td>
                                 <td>

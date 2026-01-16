@@ -58,7 +58,8 @@
                         <table class="table">
                             <thead>
                                 <tr>
-                                    <th>Priority</th>
+                                    <th>Priority Level</th>
+                                    <th>Priority Score</th>
                                     <th>S-Number</th>
                                     <th>Title</th>
                                     <th>Available Sets</th>
@@ -74,10 +75,11 @@
                                 ${hotList.map(job => `
                                     <tr>
                                         <td>
-                                            <span class="badge ${getPriorityBadgeClass(job.priority)}">
+                                            <span class="badge ${getPriorityBadgeClass(job.base_priority)}">
                                                 ${job.priority_label}
                                             </span>
                                         </td>
+                                        <td><strong>${job.priority_score}</strong></td>
                                         <td><strong>S${job.s_number}</strong></td>
                                         <td>${job.title || '-'}</td>
                                         <td class="text-center">${job.available_sets}</td>

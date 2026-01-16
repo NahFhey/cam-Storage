@@ -78,7 +78,10 @@
                 </button>
             </div>
 
-            <div class="grid grid-2 mt-4">
+            <div class="grid grid-3 mt-4">
+                <button id="moveSetBtn" class="btn btn-primary btn-large">
+                    Move Entire Set
+                </button>
                 <button id="undoBtn" class="btn btn-secondary btn-large">
                     Undo Last Move
                 </button>
@@ -245,8 +248,6 @@
             btn.addEventListener('click', async () => {
                 const toStation = btn.dataset.station;
                 btn.disabled = true;
-                const originalText = btn.textContent;
-                btn.textContent = 'Moving...';
 
                 try {
                     const result = await moveCam({
@@ -268,9 +269,71 @@
                 } catch (error) {
                     showError(error.message);
                     btn.disabled = false;
-                    btn.textContent = originalText;
                 }
             });
+        });
+
+        // Move Entire Set button
+        const moveSetBtn = document.getElementById('moveSetBtn');
+        moveSetBtn.addEventListener('click', async () => {
+            if (!currentCamItem || !currentJob) return;
+
+            // Prompt for which station
+            const station = prompt('Enter station to move entire set to:\nactive, sharpen, cabinet, or refill');
+            if (!station) return;
+
+            const stationLower = station.toLowerCase().trim();
+            if (!['active', 'sharpen', 'cabinet', 'refill'].includes(stationLower)) {
+                showError('Invalid station. Must be: active, sharpen, cabinet, or refill');
+                return;
+            }
+
+            if (!confirm(`Move all CAMs in Set ${currentCamItem.set_no} to ${formatStation(stationLower)}?`)) return;
+
+            moveSetBtn.disabled = true;
+
+            try {
+                // Get all cam items for this job+set
+                const jobData = await getJob(currentJob.id);
+                const camsInSet = jobData.cam_items.filter(c => c.set_no === currentCamItem.set_no);
+
+                let movedCount = 0;
+                let autoBumpCount = 0;
+
+                for (const cam of camsInSet) {
+                    // Skip if already at target station
+                    if (cam.status_station === stationLower) continue;
+
+                    try {
+                        const result = await moveCam({
+                            cam_item_id: cam.id,
+                            to_station: stationLower
+                        });
+                        movedCount++;
+
+                        if (result.auto_bumped) {
+                            autoBumpCount++;
+                        }
+                    } catch (error) {
+                        console.error(`Failed to move cam ${cam.id}:`, error);
+                    }
+                }
+
+                if (movedCount > 0) {
+                    let message = `Moved ${movedCount} CAM(s) from Set ${currentCamItem.set_no} to ${formatStation(stationLower)}`;
+                    if (autoBumpCount > 0) {
+                        message += ` (${autoBumpCount} auto-bumped)`;
+                    }
+                    showSuccess(message);
+                    resetUI();
+                } else {
+                    showError('No CAMs were moved (all already at target station)');
+                    moveSetBtn.disabled = false;
+                }
+            } catch (error) {
+                showError(error.message);
+                moveSetBtn.disabled = false;
+            }
         });
 
         // Undo button

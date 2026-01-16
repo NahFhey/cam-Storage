@@ -208,57 +208,61 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
         }
     }
 
-def calculate_priority(available_sets: int, refill_count: int, priority_level: str) -> Tuple[int, str]:
+def calculate_priority(available_sets: int, refill_count: int, priority_level: str,
+                       all_in_sharpen: bool = False) -> Tuple[int, int, str]:
     """
-    Calculate job priority based on available sets and refill count.
+    Calculate job priority score based on multiple factors.
 
     Rules:
-    - Start with priority_level (low, medium, high, urgent, top)
-    - If available_sets == 1: bump up one level
-    - If available_sets == 0: bump up two levels
-    - If refill_count >= 3: bump up one level
-    - Maximum level is 'top'
+    - Base priority from admin setting: 0 (low) to 4 (top)
+    - Priority score = base + adjustments:
+      - If all_in_sharpen: +100 (massive boost to top of list)
+      - If available_sets == 1: +1
+      - If available_sets == 0: +2
+      - If refill_count >= 3: +1
 
-    Returns: (numeric_priority_for_sorting, label)
+    Returns: (base_priority, priority_score, label)
     """
-    # Convert level to numeric for calculation
-    priority_value = config.PRIORITY_VALUES.get(priority_level, 0)
+    # Base priority from admin setting
+    base_priority = config.PRIORITY_VALUES.get(priority_level, 0)
+
+    # Start with base for score calculation
+    priority_score = base_priority
+
+    # All in sharpen gets massive boost (goes to top of hot list)
+    if all_in_sharpen:
+        priority_score += 100
 
     # Available sets adjustment
     if available_sets == 0:
-        priority_value += 2  # Bump up two levels
+        priority_score += 2
     elif available_sets == 1:
-        priority_value += 1  # Bump up one level
+        priority_score += 1
 
     # Refill count adjustment
     if refill_count >= 3:
-        priority_value += 1
+        priority_score += 1
 
-    # Cap at top priority
-    priority_value = min(priority_value, 4)  # 4 = top
+    # Label is based on base priority level
+    label = config.PRIORITY_LABELS.get(priority_level, "Low")
 
-    # Convert back to label
-    for level, value in config.PRIORITY_VALUES.items():
-        if value == priority_value:
-            label = config.PRIORITY_LABELS[level]
-            break
-    else:
-        label = "Top"  # Fallback
-
-    return priority_value, label
+    return base_priority, priority_score, label
 
 async def generate_hot_list(db) -> List[Dict]:
     """
     Generate the hot list (priority queue) for all jobs.
 
-    Returns list of jobs sorted by:
-    1. Priority (desc)
-    2. Refill count (desc)
-    3. Oldest update (asc)
+    Filtering rules:
+    - Only show jobs with at least one cam in sharpen
+    - Hide jobs where all cams are in cabinet
+
+    Sorting:
+    - By priority_score (descending)
+    - Jobs with all cams in sharpen get huge boost
 
     Each job includes:
     - job info
-    - computed priority and label
+    - computed priority score and label
     - counts by station
     - available sets count
     - oldest cam update timestamp
@@ -270,6 +274,7 @@ async def generate_hot_list(db) -> List[Dict]:
             j.s_number,
             j.title,
             j.priority_level,
+            COUNT(c.id) as total_count,
             COUNT(DISTINCT CASE WHEN c.status_station != 'refill' THEN c.set_no END) as available_sets,
             COUNT(CASE WHEN c.status_station = 'active' THEN 1 END) as active_count,
             COUNT(CASE WHEN c.status_station = 'sharpen' THEN 1 END) as sharpen_count,
@@ -286,11 +291,24 @@ async def generate_hot_list(db) -> List[Dict]:
     for job in jobs:
         job_dict = dict(job)
 
+        # Skip if no cams in sharpen
+        if job_dict['sharpen_count'] == 0:
+            continue
+
+        # Skip if all cams are in cabinet (no work needed)
+        if job_dict['total_count'] > 0 and job_dict['cabinet_count'] == job_dict['total_count']:
+            continue
+
+        # Check if ALL cams are in sharpen
+        all_in_sharpen = (job_dict['total_count'] > 0 and
+                         job_dict['sharpen_count'] == job_dict['total_count'])
+
         # Calculate priority
-        priority, label = calculate_priority(
+        base_priority, priority_score, label = calculate_priority(
             available_sets=job_dict['available_sets'],
             refill_count=job_dict['refill_count'],
-            priority_level=job_dict['priority_level'] or 'low'
+            priority_level=job_dict['priority_level'] or 'low',
+            all_in_sharpen=all_in_sharpen
         )
 
         hot_list.append({
@@ -298,8 +316,10 @@ async def generate_hot_list(db) -> List[Dict]:
             "s_number": job_dict['s_number'],
             "title": job_dict['title'],
             "priority_level": job_dict['priority_level'],
-            "priority": priority,
+            "base_priority": base_priority,
+            "priority_score": priority_score,
             "priority_label": label,
+            "all_in_sharpen": all_in_sharpen,
             "available_sets": job_dict['available_sets'],
             "active_count": job_dict['active_count'],
             "sharpen_count": job_dict['sharpen_count'],
@@ -308,9 +328,7 @@ async def generate_hot_list(db) -> List[Dict]:
             "oldest_update": job_dict['oldest_update']
         })
 
-    # Sort by priority (desc), refill_count (desc), oldest_update (asc)
-    hot_list.sort(
-        key=lambda x: (-x['priority'], -x['refill_count'], x['oldest_update'] or '9999')
-    )
+    # Sort by priority_score (descending)
+    hot_list.sort(key=lambda x: -x['priority_score'])
 
     return hot_list

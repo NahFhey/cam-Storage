@@ -57,21 +57,21 @@ def seed_database(db_path=None):
     s_number = '1793'
     if s_number in job_ids:
         cam_configs = [
-            # Set 1 (set_no, cam_no, die_position, enter_steel, exit_steel, station)
-            (1, 1, 'upper', 'D2', 'A2', 'active'),
-            (1, 2, 'upper', 'D2', 'A2', 'cabinet'),
-            (1, 3, 'lower', 'H13', 'S7', 'cabinet'),
-            (1, 4, 'lower', 'H13', 'S7', 'refill'),
+            # Set 1 (set_no, cam_no, die_position, enter_orientation, exit_orientation, station)
+            (1, 1, 'upper', 'enter', 'exit', 'active'),
+            (1, 2, 'upper', 'enter', 'exit', 'cabinet'),
+            (1, 3, 'lower', 'enter', 'exit', 'cabinet'),
+            (1, 4, 'lower', 'enter', 'exit', 'refill'),
             # Set 2
-            (2, 1, 'upper', 'D2', 'A2', 'sharpen'),
-            (2, 2, 'upper', 'D2', 'A2', 'cabinet'),
-            (2, 3, 'lower', 'H13', 'S7', 'cabinet'),
-            (2, 4, 'lower', 'H13', 'S7', 'cabinet'),
+            (2, 1, 'upper', 'enter', 'exit', 'sharpen'),
+            (2, 2, 'upper', 'enter', 'exit', 'cabinet'),
+            (2, 3, 'lower', 'enter', 'exit', 'cabinet'),
+            (2, 4, 'lower', 'enter', 'exit', 'cabinet'),
             # Set 3
-            (3, 1, 'upper', 'D2', 'A2', 'cabinet'),
-            (3, 2, 'upper', 'D2', 'A2', 'cabinet'),
-            (3, 3, 'lower', 'H13', 'S7', 'sharpen'),
-            (3, 4, 'lower', 'H13', 'S7', 'refill'),
+            (3, 1, 'upper', 'enter', 'exit', 'cabinet'),
+            (3, 2, 'upper', 'enter', 'exit', 'cabinet'),
+            (3, 3, 'lower', 'enter', 'exit', 'sharpen'),
+            (3, 4, 'lower', 'enter', 'exit', 'refill'),
         ]
 
         for set_no, cam_no, die_pos, enter_steel, exit_steel, station in cam_configs:

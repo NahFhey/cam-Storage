@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS config (
 );
 
 -- Insert default config values
-INSERT OR IGNORE INTO config (key, value) VALUES ('auto_bump_enabled', 'false');
+INSERT OR IGNORE INTO config (key, value) VALUES ('auto_bump_enabled', 'true');
 INSERT OR IGNORE INTO config (key, value) VALUES ('default_operator', 'kiosk');
 """
 
