@@ -1,7 +1,7 @@
 """
 FastAPI backend for CAM Tracking Kiosk
 """
-from fastapi import FastAPI, HTTPException, Depends, Response
+from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -746,6 +746,96 @@ async def export_database():
         media_type="application/octet-stream",
         filename="cam_tracking_backup.db"
     )
+
+@app.post("/api/import/database")
+async def import_database(file: UploadFile = File(...)):
+    """
+    Import/restore a SQLite database file.
+    WARNING: This replaces ALL current data!
+    """
+    import os
+    import tempfile
+    import sqlite3
+    from datetime import datetime
+
+    # Validate file extension
+    if not file.filename.endswith(('.db', '.sqlite', '.sqlite3')):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Must be a SQLite database file (.db, .sqlite, or .sqlite3)"
+        )
+
+    # Create a temporary file to validate the uploaded database
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
+        temp_path = temp_file.name
+
+        try:
+            # Write uploaded file to temp location
+            content = await file.read()
+            temp_file.write(content)
+            temp_file.flush()
+
+            # Validate it's a valid SQLite database and has expected tables
+            try:
+                conn = sqlite3.connect(temp_path)
+                cursor = conn.cursor()
+
+                # Check for required tables
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = {row[0] for row in cursor.fetchall()}
+                required_tables = {'jobs', 'cam_items', 'moves'}
+
+                if not required_tables.issubset(tables):
+                    missing = required_tables - tables
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid database: missing required tables: {', '.join(missing)}"
+                    )
+
+                # Get counts for response
+                cursor.execute("SELECT COUNT(*) FROM jobs")
+                jobs_count = cursor.fetchone()[0]
+
+                cursor.execute("SELECT COUNT(*) FROM cam_items")
+                cam_items_count = cursor.fetchone()[0]
+
+                cursor.execute("SELECT COUNT(*) FROM moves")
+                moves_count = cursor.fetchone()[0]
+
+                conn.close()
+
+            except sqlite3.DatabaseError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid SQLite database file: {str(e)}"
+                )
+
+            # Create backup of current database
+            backup_path = f"{config.DATABASE_PATH}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if os.path.exists(config.DATABASE_PATH):
+                shutil.copy2(config.DATABASE_PATH, backup_path)
+
+            # Replace current database with uploaded one
+            shutil.move(temp_path, config.DATABASE_PATH)
+
+            return {
+                "message": "Database imported successfully",
+                "backup_created": backup_path if os.path.exists(backup_path) else None,
+                "jobs_count": jobs_count,
+                "cam_items_count": cam_items_count,
+                "moves_count": moves_count
+            }
+
+        except HTTPException:
+            # Clean up temp file and re-raise
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise
+        except Exception as e:
+            # Clean up temp file
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

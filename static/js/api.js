@@ -179,6 +179,67 @@ function exportDatabase() {
     window.location.href = `${API_BASE}/export/database`;
 }
 
+async function importDatabase() {
+    const fileInput = document.getElementById('dbFileInput');
+    const file = fileInput.files[0];
+
+    if (!file) {
+        showAlertInContainer('importAlerts', 'Please select a database file to import', 'error');
+        return;
+    }
+
+    if (!file.name.match(/\.(db|sqlite|sqlite3)$/i)) {
+        showAlertInContainer('importAlerts', 'Please select a valid SQLite database file (.db, .sqlite, or .sqlite3)', 'error');
+        return;
+    }
+
+    if (!confirm('⚠️ WARNING: This will PERMANENTLY REPLACE all current data!\n\nAre you absolutely sure you want to continue?')) {
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch(`${API_BASE}/import/database`, {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Import failed');
+        }
+
+        const result = await response.json();
+        showAlertInContainer('importAlerts', `Database imported successfully! Jobs: ${result.jobs_count}, CAMs: ${result.cam_items_count}, Moves: ${result.moves_count}`, 'success');
+
+        // Clear file input
+        fileInput.value = '';
+
+        // Reload the page after a short delay to refresh all data
+        setTimeout(() => {
+            window.location.reload();
+        }, 2000);
+    } catch (error) {
+        showAlertInContainer('importAlerts', `Import failed: ${error.message}`, 'error');
+    }
+}
+
+function showAlertInContainer(containerId, message, type) {
+    const container = document.getElementById(containerId);
+    if (!container) {
+        console.error(`Alert container '${containerId}' not found`);
+        return;
+    }
+    container.innerHTML = '';
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type}`;
+    alertDiv.textContent = message;
+    container.appendChild(alertDiv);
+    setTimeout(() => alertDiv.remove(), 5000);
+}
+
 // UI Helpers
 function showAlert(message, type = 'info') {
     const alertDiv = document.createElement('div');
