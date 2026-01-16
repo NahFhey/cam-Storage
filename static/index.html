@@ -63,6 +63,13 @@
 
             <div id="currentStation" class="text-center mb-4"></div>
 
+            <div class="text-center mb-3">
+                <label style="font-size: 1.25rem; font-weight: 600; cursor: pointer;">
+                    <input type="checkbox" id="moveEntireSetToggle" style="width: auto; margin-right: 0.5rem; transform: scale(1.5);">
+                    Move Entire Set
+                </label>
+            </div>
+
             <div class="station-grid">
                 <button class="btn btn-success btn-large station-btn" data-station="active">
                     Active
@@ -78,10 +85,7 @@
                 </button>
             </div>
 
-            <div class="grid grid-3 mt-4">
-                <button id="moveSetBtn" class="btn btn-primary btn-large">
-                    Move Entire Set
-                </button>
+            <div class="grid grid-2 mt-4">
                 <button id="undoBtn" class="btn btn-secondary btn-large">
                     Undo Last Move
                 </button>
@@ -181,7 +185,28 @@
             currentCamItem = camItem;
             currentJob = job;
 
-            toolInfo.textContent = `S${job.s_number} Set${camItem.set_no} Cam${camItem.cam_no}`;
+            // Build tool info with die position and orientation
+            let toolInfoText = `S${job.s_number} Set${camItem.set_no} Cam${camItem.cam_no}`;
+            if (camItem.die_position) {
+                toolInfoText += ` (${camItem.die_position.toUpperCase()})`;
+            }
+            if (camItem.enter_die_steel) {
+                toolInfoText += ` - ${camItem.enter_die_steel}`;
+            }
+
+            toolInfo.textContent = toolInfoText;
+
+            // Color-code toolInfo based on status
+            const stationColors = {
+                'active': '#dcfce7',    // green
+                'sharpen': '#fed7aa',   // orange
+                'cabinet': '#dbeafe',   // blue
+                'refill': '#fecaca'     // red
+            };
+            toolInfo.style.backgroundColor = stationColors[camItem.status_station] || '#f3f4f6';
+            toolInfo.style.padding = '1rem';
+            toolInfo.style.borderRadius = '0.5rem';
+
             currentStation.innerHTML = `
                 Current Station: <span class="badge ${getStationBadgeClass(camItem.status_station)}">
                     ${formatStation(camItem.status_station)}
@@ -247,93 +272,104 @@
         document.querySelectorAll('.station-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
                 const toStation = btn.dataset.station;
+                const moveEntireSet = document.getElementById('moveEntireSetToggle').checked;
                 btn.disabled = true;
 
                 try {
-                    const result = await moveCam({
-                        cam_item_id: currentCamItem.id,
-                        to_station: toStation
-                    });
+                    if (moveEntireSet) {
+                        // Move entire set
+                        const jobData = await getJob(currentJob.id);
+                        const camsInSet = jobData.cam_items.filter(c => c.set_no === currentCamItem.set_no);
 
-                    showSuccess(`Moved to ${formatStation(toStation)}`);
+                        let movedCount = 0;
+                        let bumpedSetNumbers = new Set();
 
-                    if (result.auto_bumped) {
-                        showAlert(
-                            `Auto-bumped Set${result.auto_bumped.set_no} Cam${result.auto_bumped.cam_no} to Sharpen`,
-                            'info'
-                        );
+                        // If moving to active, first bump any other active sets with matching die positions
+                        if (toStation === 'active') {
+                            const diePositionsInSet = [...new Set(camsInSet.map(c => c.die_position).filter(Boolean))];
+
+                            for (const diePos of diePositionsInSet) {
+                                // Find all cams from OTHER sets that are active with this die position
+                                const activeCamsToMove = jobData.cam_items.filter(c =>
+                                    c.set_no !== currentCamItem.set_no &&
+                                    c.status_station === 'active' &&
+                                    c.die_position === diePos
+                                );
+
+                                // Move entire active set(s) to sharpen
+                                const activeSets = [...new Set(activeCamsToMove.map(c => c.set_no))];
+                                for (const activeSetNo of activeSets) {
+                                    const camsToMove = jobData.cam_items.filter(c =>
+                                        c.set_no === activeSetNo && c.status_station === 'active'
+                                    );
+
+                                    for (const cam of camsToMove) {
+                                        try {
+                                            await moveCam({
+                                                cam_item_id: cam.id,
+                                                to_station: 'sharpen'
+                                            });
+                                            bumpedSetNumbers.add(activeSetNo);
+                                        } catch (error) {
+                                            console.error(`Failed to bump cam ${cam.id}:`, error);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Now move the entire current set to target station
+                        for (const cam of camsInSet) {
+                            // Skip if already at target station
+                            if (cam.status_station === toStation) continue;
+
+                            try {
+                                await moveCam({
+                                    cam_item_id: cam.id,
+                                    to_station: toStation
+                                });
+                                movedCount++;
+                            } catch (error) {
+                                console.error(`Failed to move cam ${cam.id}:`, error);
+                            }
+                        }
+
+                        if (movedCount > 0 || bumpedSetNumbers.size > 0) {
+                            let message = `Moved ${movedCount} CAM(s) from Set ${currentCamItem.set_no} to ${formatStation(toStation)}`;
+                            if (bumpedSetNumbers.size > 0) {
+                                const bumpedSets = Array.from(bumpedSetNumbers).sort().join(', ');
+                                message += ` (bumped Set ${bumpedSets} to Sharpen)`;
+                            }
+                            showSuccess(message);
+                            resetUI();
+                        } else {
+                            showError('No CAMs were moved (all already at target station)');
+                            btn.disabled = false;
+                        }
+                    } else {
+                        // Move single cam
+                        const result = await moveCam({
+                            cam_item_id: currentCamItem.id,
+                            to_station: toStation
+                        });
+
+                        showSuccess(`Moved to ${formatStation(toStation)}`);
+
+                        if (result.auto_bumped) {
+                            showAlert(
+                                `Auto-bumped Set${result.auto_bumped.set_no} Cam${result.auto_bumped.cam_no} to Sharpen`,
+                                'info'
+                            );
+                        }
+
+                        // Reset UI for next scan
+                        resetUI();
                     }
-
-                    // Reset UI for next scan
-                    resetUI();
                 } catch (error) {
                     showError(error.message);
                     btn.disabled = false;
                 }
             });
-        });
-
-        // Move Entire Set button
-        const moveSetBtn = document.getElementById('moveSetBtn');
-        moveSetBtn.addEventListener('click', async () => {
-            if (!currentCamItem || !currentJob) return;
-
-            // Prompt for which station
-            const station = prompt('Enter station to move entire set to:\nactive, sharpen, cabinet, or refill');
-            if (!station) return;
-
-            const stationLower = station.toLowerCase().trim();
-            if (!['active', 'sharpen', 'cabinet', 'refill'].includes(stationLower)) {
-                showError('Invalid station. Must be: active, sharpen, cabinet, or refill');
-                return;
-            }
-
-            if (!confirm(`Move all CAMs in Set ${currentCamItem.set_no} to ${formatStation(stationLower)}?`)) return;
-
-            moveSetBtn.disabled = true;
-
-            try {
-                // Get all cam items for this job+set
-                const jobData = await getJob(currentJob.id);
-                const camsInSet = jobData.cam_items.filter(c => c.set_no === currentCamItem.set_no);
-
-                let movedCount = 0;
-                let autoBumpCount = 0;
-
-                for (const cam of camsInSet) {
-                    // Skip if already at target station
-                    if (cam.status_station === stationLower) continue;
-
-                    try {
-                        const result = await moveCam({
-                            cam_item_id: cam.id,
-                            to_station: stationLower
-                        });
-                        movedCount++;
-
-                        if (result.auto_bumped) {
-                            autoBumpCount++;
-                        }
-                    } catch (error) {
-                        console.error(`Failed to move cam ${cam.id}:`, error);
-                    }
-                }
-
-                if (movedCount > 0) {
-                    let message = `Moved ${movedCount} CAM(s) from Set ${currentCamItem.set_no} to ${formatStation(stationLower)}`;
-                    if (autoBumpCount > 0) {
-                        message += ` (${autoBumpCount} auto-bumped)`;
-                    }
-                    showSuccess(message);
-                    resetUI();
-                } else {
-                    showError('No CAMs were moved (all already at target station)');
-                    moveSetBtn.disabled = false;
-                }
-            } catch (error) {
-                showError(error.message);
-                moveSetBtn.disabled = false;
-            }
         });
 
         // Undo button

@@ -374,8 +374,7 @@
                             <th>Set</th>
                             <th>Cam</th>
                             <th>Die Position</th>
-                            <th>Enter Die Steel</th>
-                            <th>Exit Die Steel</th>
+                            <th>Orientation</th>
                             <th>Station</th>
                             <th>Notes</th>
                             <th>Actions</th>
@@ -398,13 +397,6 @@
                                         <option value="" ${!cam.enter_die_steel ? 'selected' : ''}>-</option>
                                         <option value="enter" ${cam.enter_die_steel === 'enter' ? 'selected' : ''}>Enter</option>
                                         <option value="exit" ${cam.enter_die_steel === 'exit' ? 'selected' : ''}>Exit</option>
-                                    </select>
-                                </td>
-                                <td>
-                                    <select class="form-select cam-field" data-field="exit_die_steel" data-cam-id="${cam.id}" style="padding: 0.5rem;">
-                                        <option value="" ${!cam.exit_die_steel ? 'selected' : ''}>-</option>
-                                        <option value="enter" ${cam.exit_die_steel === 'enter' ? 'selected' : ''}>Enter</option>
-                                        <option value="exit" ${cam.exit_die_steel === 'exit' ? 'selected' : ''}>Exit</option>
                                     </select>
                                 </td>
                                 <td><span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span></td>
