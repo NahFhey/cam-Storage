@@ -218,7 +218,7 @@
                 await createJob(jobData);
                 showJobAlert(`Job S${jobData.s_number} created successfully`, 'success');
                 createJobForm.reset();
-                loadJobsList();
+                loadAllJobs();
                 loadJobsForBulk();
             } catch (error) {
                 showJobAlert(error.message, 'error');
