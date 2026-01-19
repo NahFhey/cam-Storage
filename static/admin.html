@@ -155,7 +155,18 @@
         <!-- All Jobs List -->
         <div class="card">
             <h2 class="card-header">All Jobs</h2>
-            <button id="refreshJobsBtn" class="btn btn-secondary mb-3">Refresh List</button>
+            <div style="margin-bottom: 1rem;">
+                <input
+                    type="text"
+                    id="jobSearchInput"
+                    class="form-input"
+                    placeholder="Search by S-Number or title..."
+                    style="font-size: 1rem; padding: 0.75rem;"
+                >
+                <p style="margin-top: 0.5rem; color: #666; font-size: 0.9rem;">
+                    Enter at least 2 characters to search. Leave blank to show all jobs.
+                </p>
+            </div>
             <div id="jobsListContent"></div>
         </div>
     </div>
@@ -271,23 +282,58 @@
         }
 
         // Jobs List
-        const refreshJobsBtn = document.getElementById('refreshJobsBtn');
+        const jobSearchInput = document.getElementById('jobSearchInput');
         const jobsListContent = document.getElementById('jobsListContent');
+        let allJobs = [];
+        let searchTimeout = null;
 
-        refreshJobsBtn.addEventListener('click', loadJobsList);
+        // Load all jobs on page load
+        loadAllJobs();
 
-        async function loadJobsList() {
-            refreshJobsBtn.disabled = true;
+        // Search with debounce
+        jobSearchInput.addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                filterAndDisplayJobs(e.target.value.trim());
+            }, 300); // 300ms debounce
+        });
 
+        async function loadAllJobs() {
             try {
-                const jobs = await getJobs();
+                allJobs = await getJobs();
+                filterAndDisplayJobs(''); // Show all initially
+            } catch (error) {
+                jobsListContent.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
 
-                if (jobs.length === 0) {
+        function filterAndDisplayJobs(searchQuery) {
+            let filteredJobs = allJobs;
+
+            // Filter if search query is provided and has at least 2 characters
+            if (searchQuery && searchQuery.length >= 2) {
+                const query = searchQuery.toLowerCase();
+                filteredJobs = allJobs.filter(job => {
+                    const sNumber = job.s_number.toString().toLowerCase();
+                    const title = (job.title || '').toLowerCase();
+                    return sNumber.includes(query) || title.includes(query);
+                });
+            }
+
+            displayJobsList(filteredJobs, searchQuery);
+        }
+
+        function displayJobsList(jobs, searchQuery) {
+            if (jobs.length === 0) {
+                if (searchQuery) {
+                    jobsListContent.innerHTML = '<p class="text-center">No jobs found matching your search.</p>';
+                } else {
                     jobsListContent.innerHTML = '<p class="text-center">No jobs found. Create one above.</p>';
-                    return;
                 }
+                return;
+            }
 
-                const html = `
+            const html = `
                     <table class="table">
                         <thead>
                             <tr>
@@ -324,39 +370,40 @@
                     </table>
                 `;
 
-                jobsListContent.innerHTML = html;
+            jobsListContent.innerHTML = html;
 
-                // Add event listeners for priority selectors
-                document.querySelectorAll('.priority-select').forEach(select => {
-                    select.addEventListener('change', async (e) => {
-                        const jobId = parseInt(e.target.dataset.jobId);
-                        const newPriority = e.target.value;
-                        const originalValue = e.target.dataset.original || e.target.value;
-                        e.target.disabled = true;
+            // Add event listeners for priority selectors
+            document.querySelectorAll('.priority-select').forEach(select => {
+                select.addEventListener('change', async (e) => {
+                    const jobId = parseInt(e.target.dataset.jobId);
+                    const newPriority = e.target.value;
+                    const originalValue = e.target.dataset.original || e.target.value;
+                    e.target.disabled = true;
 
-                        try {
-                            await updateJob(jobId, { priority_level: newPriority });
-                            e.target.dataset.original = newPriority;
-                            // Show brief success indicator
-                            e.target.style.backgroundColor = '#dcfce7';
-                            setTimeout(() => {
-                                e.target.style.backgroundColor = '';
-                            }, 1000);
-                        } catch (error) {
-                            alert('Failed to update priority: ' + error.message);
-                            e.target.value = originalValue;
-                        } finally {
-                            e.target.disabled = false;
+                    try {
+                        await updateJob(jobId, { priority_level: newPriority });
+                        e.target.dataset.original = newPriority;
+                        // Show brief success indicator
+                        e.target.style.backgroundColor = '#dcfce7';
+                        setTimeout(() => {
+                            e.target.style.backgroundColor = '';
+                        }, 1000);
+
+                        // Update the job in allJobs array
+                        const jobIndex = allJobs.findIndex(j => j.id === jobId);
+                        if (jobIndex !== -1) {
+                            allJobs[jobIndex].priority_level = newPriority;
                         }
-                    });
-                    // Store original value
-                    select.dataset.original = select.value;
+                    } catch (error) {
+                        alert('Failed to update priority: ' + error.message);
+                        e.target.value = originalValue;
+                    } finally {
+                        e.target.disabled = false;
+                    }
                 });
-            } catch (error) {
-                jobsListContent.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
-            } finally {
-                refreshJobsBtn.disabled = false;
-            }
+                // Store original value
+                select.dataset.original = select.value;
+            });
         }
 
         // CAM Items Editing
@@ -532,7 +579,6 @@
 
         // Initialize
         loadConfig();
-        loadJobsList();
         loadJobsForBulk();
         loadJobsForEdit();
     </script>
