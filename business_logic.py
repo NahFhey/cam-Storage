@@ -16,7 +16,8 @@ async def move_cam_to_station(
     to_station: str,
     operator: str = None,
     notes: str = None,
-    auto_bump: bool = None
+    auto_bump: bool = None,
+    material_removed: float = None
 ) -> Dict:
     """
     Move a CAM item to a new station.
@@ -125,10 +126,10 @@ async def move_cam_to_station(
     # Record the move
     cursor = await db.execute(
         """
-        INSERT INTO moves (cam_item_id, from_station, to_station, operator, notes)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO moves (cam_item_id, from_station, to_station, operator, notes, material_removed)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (cam_item_id, from_station, to_station, operator or config.DEFAULT_OPERATOR, notes)
+        (cam_item_id, from_station, to_station, operator or config.DEFAULT_OPERATOR, notes, material_removed)
     )
     move_id = cursor.lastrowid
 

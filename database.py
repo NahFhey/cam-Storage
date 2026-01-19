@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS moves (
     moved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     operator TEXT,
     notes TEXT,
+    material_removed REAL,
     undone BOOLEAN NOT NULL DEFAULT 0,
     FOREIGN KEY (cam_item_id) REFERENCES cam_items(id) ON DELETE CASCADE
 );
@@ -158,6 +159,15 @@ def migrate_database(db_path: str = None):
         print("  Adding die_position column to cam_items...")
         cursor.execute("ALTER TABLE cam_items ADD COLUMN die_position TEXT")
         print("    Added die_position column (defaults to NULL)")
+
+    # Check if material_removed exists
+    cursor.execute("PRAGMA table_info(moves)")
+    columns = [col[1] for col in cursor.fetchall()]
+
+    if 'material_removed' not in columns:
+        print("  Adding material_removed column to moves...")
+        cursor.execute("ALTER TABLE moves ADD COLUMN material_removed REAL")
+        print("    Added material_removed column (defaults to NULL)")
 
     conn.commit()
     conn.close()

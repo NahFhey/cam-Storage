@@ -65,6 +65,7 @@ class MoveRequest(BaseModel):
     operator: Optional[str] = None
     notes: Optional[str] = None
     auto_bump: Optional[bool] = None
+    material_removed: Optional[float] = None
 
 class EntryResolveRequest(BaseModel):
     entry: str
@@ -407,13 +408,37 @@ async def resolve_entry_endpoint(
 async def move_cam(move: MoveRequest, db: aiosqlite.Connection = Depends(get_db)):
     """Move a cam item to a new station"""
     try:
+        # Get current cam state to check from_station
+        cursor = await db.execute(
+            "SELECT status_station FROM cam_items WHERE id = ?",
+            (move.cam_item_id,)
+        )
+        cam = await cursor.fetchone()
+
+        if not cam:
+            raise HTTPException(status_code=404, detail="CAM item not found")
+
+        # Validate material_removed when moving from sharpen to cabinet
+        if cam['status_station'] == 'sharpen' and move.to_station == 'cabinet':
+            if move.material_removed is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Material removed must be specified when moving from Sharpen to Cabinet"
+                )
+            if move.material_removed < 0 or move.material_removed > 1.0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Material removed must be between 0.000 and 1.000 inches"
+                )
+
         result = await move_cam_to_station(
             db,
             cam_item_id=move.cam_item_id,
             to_station=move.to_station,
             operator=move.operator,
             notes=move.notes,
-            auto_bump=move.auto_bump
+            auto_bump=move.auto_bump,
+            material_removed=move.material_removed
         )
         return result
     except ValueError as e:
@@ -459,6 +484,51 @@ async def list_moves(
 
     moves = await cursor.fetchall()
     return [dict(m) for m in moves]
+
+@app.get("/api/cam-items/{cam_item_id}/sharpen-stats")
+async def get_sharpen_stats(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
+    """Get sharpening statistics for a CAM item"""
+    # Get sharpen count and material removal stats
+    cursor = await db.execute(
+        """
+        SELECT
+            COUNT(*) as sharpen_count,
+            AVG(material_removed) as avg_material_removed,
+            MAX(moved_at) as last_sharpen_date
+        FROM moves
+        WHERE cam_item_id = ?
+          AND from_station = 'sharpen'
+          AND to_station = 'cabinet'
+          AND undone = 0
+          AND material_removed IS NOT NULL
+        """,
+        (cam_item_id,)
+    )
+    stats = await cursor.fetchone()
+
+    # Get last material removed
+    cursor = await db.execute(
+        """
+        SELECT material_removed
+        FROM moves
+        WHERE cam_item_id = ?
+          AND from_station = 'sharpen'
+          AND to_station = 'cabinet'
+          AND undone = 0
+          AND material_removed IS NOT NULL
+        ORDER BY moved_at DESC
+        LIMIT 1
+        """,
+        (cam_item_id,)
+    )
+    last_move = await cursor.fetchone()
+
+    return {
+        "sharpen_count": stats['sharpen_count'] or 0,
+        "avg_material_removed": round(stats['avg_material_removed'], 3) if stats['avg_material_removed'] else None,
+        "last_material_removed": last_move['material_removed'] if last_move else None,
+        "last_sharpen_date": stats['last_sharpen_date']
+    }
 
 # ========== Hot List Endpoint ==========
 

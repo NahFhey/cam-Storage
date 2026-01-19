@@ -100,7 +100,68 @@
             <h3 class="card-header">Recent Moves for This Tool</h3>
             <div id="historyContent"></div>
         </div>
+
+        <!-- Material Removal Modal -->
+        <div id="materialModal" class="modal hidden">
+            <div class="modal-content">
+                <h3 class="card-header">Material Removed During Sharpening</h3>
+                <p style="margin: 1rem 0; color: #666;">
+                    Enter the amount of material removed in thousandths of an inch.
+                </p>
+                <div style="margin: 1.5rem 0;">
+                    <label for="materialInput" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                        Material Removed (inches):
+                    </label>
+                    <input
+                        type="text"
+                        id="materialInput"
+                        class="form-input"
+                        placeholder="Type digits (e.g., 12 = 0.012)"
+                        style="font-size: 1.5rem; text-align: center; font-weight: 700;"
+                        maxlength="4"
+                        autocomplete="off"
+                    >
+                    <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #666;">
+                        Max: 1.000 inches
+                    </div>
+                </div>
+                <div style="display: flex; gap: 1rem;">
+                    <button id="materialConfirmBtn" class="btn btn-success btn-large" style="flex: 1;">
+                        Confirm Move
+                    </button>
+                    <button id="materialCancelBtn" class="btn btn-secondary btn-large" style="flex: 1;">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
+
+    <style>
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal.hidden {
+            display: none;
+        }
+        .modal-content {
+            background: white;
+            padding: 2rem;
+            border-radius: 0.5rem;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+    </style>
 
     <script src="/static/js/api.js"></script>
     <script>
@@ -289,6 +350,74 @@
             }
         }
 
+        // Material removal modal elements
+        const materialModal = document.getElementById('materialModal');
+        const materialInput = document.getElementById('materialInput');
+        const materialConfirmBtn = document.getElementById('materialConfirmBtn');
+        const materialCancelBtn = document.getElementById('materialCancelBtn');
+
+        // Auto-format material input (12 -> 0.012)
+        materialInput.addEventListener('input', (e) => {
+            let value = e.target.value.replace(/\D/g, ''); // Remove non-digits
+            if (value.length > 4) value = value.slice(0, 4); // Max 4 digits (0-1000 thousandths)
+
+            // Convert to decimal format
+            const num = parseInt(value || '0');
+            const formatted = (num / 1000).toFixed(3);
+
+            // Update displayed value
+            e.target.setAttribute('data-value', value);
+            e.target.value = formatted;
+        });
+
+        // Prevent non-numeric input
+        materialInput.addEventListener('keypress', (e) => {
+            if (!/[0-9]/.test(e.key) && e.key !== 'Backspace' && e.key !== 'Delete' && e.key !== 'Enter') {
+                e.preventDefault();
+            }
+            if (e.key === 'Enter') {
+                materialConfirmBtn.click();
+            }
+        });
+
+        // Helper function to prompt for material removed
+        function promptForMaterialRemoved(camInfo) {
+            return new Promise((resolve, reject) => {
+                materialModal.classList.remove('hidden');
+                materialInput.value = '0.000';
+                materialInput.setAttribute('data-value', '0');
+                materialInput.focus();
+
+                // Update modal with cam info
+                const modalTitle = document.querySelector('#materialModal h3');
+                modalTitle.textContent = `Material Removed: ${camInfo}`;
+
+                const confirmHandler = () => {
+                    const value = parseFloat(materialInput.value);
+                    if (isNaN(value) || value < 0 || value > 1.0) {
+                        showError('Invalid material removed value. Must be between 0.000 and 1.000');
+                        return;
+                    }
+                    cleanup();
+                    resolve(value);
+                };
+
+                const cancelHandler = () => {
+                    cleanup();
+                    reject(new Error('Material input cancelled'));
+                };
+
+                const cleanup = () => {
+                    materialModal.classList.add('hidden');
+                    materialConfirmBtn.removeEventListener('click', confirmHandler);
+                    materialCancelBtn.removeEventListener('click', cancelHandler);
+                };
+
+                materialConfirmBtn.addEventListener('click', confirmHandler);
+                materialCancelBtn.addEventListener('click', cancelHandler);
+            });
+        }
+
         // Station button clicks
         document.querySelectorAll('.station-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
@@ -345,12 +474,24 @@
                             if (cam.status_station === toStation) continue;
 
                             try {
+                                let material_removed = null;
+                                // Prompt for material removed if moving from sharpen to cabinet
+                                if (cam.status_station === 'sharpen' && toStation === 'cabinet') {
+                                    const camInfo = `S${currentJob.s_number} Set${cam.set_no} Cam${cam.cam_no}`;
+                                    material_removed = await promptForMaterialRemoved(camInfo);
+                                }
+
                                 await moveCam({
                                     cam_item_id: cam.id,
-                                    to_station: toStation
+                                    to_station: toStation,
+                                    material_removed: material_removed
                                 });
                                 movedCount++;
                             } catch (error) {
+                                if (error.message === 'Material input cancelled') {
+                                    // User cancelled - stop moving set
+                                    throw error;
+                                }
                                 console.error(`Failed to move cam ${cam.id}:`, error);
                             }
                         }
@@ -369,9 +510,17 @@
                         }
                     } else {
                         // Move single cam
+                        let material_removed = null;
+                        // Prompt for material removed if moving from sharpen to cabinet
+                        if (currentCamItem.status_station === 'sharpen' && toStation === 'cabinet') {
+                            const camInfo = `S${currentJob.s_number} Set${currentCamItem.set_no} Cam${currentCamItem.cam_no}`;
+                            material_removed = await promptForMaterialRemoved(camInfo);
+                        }
+
                         const result = await moveCam({
                             cam_item_id: currentCamItem.id,
-                            to_station: toStation
+                            to_station: toStation,
+                            material_removed: material_removed
                         });
 
                         showSuccess(`Moved to ${formatStation(toStation)}`);
