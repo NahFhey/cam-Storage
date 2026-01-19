@@ -56,6 +56,12 @@
                 <h3 style="margin: 2rem 0 1rem;">Top 20 Tools by Cycle Count</h3>
                 <div id="cycleCounts"></div>
             </div>
+
+            <!-- Material Removal Stats -->
+            <div id="materialStatsSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Material Removal Statistics</h3>
+                <div id="materialStats"></div>
+            </div>
         </div>
     </div>
 
@@ -76,7 +82,8 @@
                     loadRecentMoves(),
                     loadDwellTimes(),
                     loadSharpenBacklog(),
-                    loadCycleCounts()
+                    loadCycleCounts(),
+                    loadMaterialStats()
                 ]);
             } catch (error) {
                 showError(error.message);
@@ -209,6 +216,67 @@
             }
 
             document.getElementById('cycleCountsSection').classList.remove('hidden');
+        }
+
+        async function loadMaterialStats() {
+            // Get all jobs and their CAM items
+            const jobs = await getJobs();
+            const allStats = [];
+
+            for (const job of jobs) {
+                const data = await getJob(job.id);
+                for (const cam of data.cam_items) {
+                    try {
+                        const stats = await fetch(`/api/cam-items/${cam.id}/sharpen-stats`).then(r => r.json());
+                        if (stats.sharpen_count > 0) {
+                            allStats.push({
+                                s_number: job.s_number,
+                                set_no: cam.set_no,
+                                cam_no: cam.cam_no,
+                                sharpen_count: stats.sharpen_count,
+                                last_removed: stats.last_material_removed,
+                                avg_removed: stats.avg_material_removed
+                            });
+                        }
+                    } catch (error) {
+                        console.error(`Failed to load stats for cam ${cam.id}:`, error);
+                    }
+                }
+            }
+
+            // Sort by sharpen count descending
+            allStats.sort((a, b) => b.sharpen_count - a.sharpen_count);
+
+            const container = document.getElementById('materialStats');
+            if (allStats.length === 0) {
+                container.innerHTML = '<p class="text-center">No sharpening data available yet.</p>';
+            } else {
+                const html = `
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Tool</th>
+                                <th>Sharpen Count</th>
+                                <th>Last Removed</th>
+                                <th>Avg Removed</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${allStats.slice(0, 20).map(item => `
+                                <tr>
+                                    <td>S${item.s_number} Set${item.set_no} Cam${item.cam_no}</td>
+                                    <td>${item.sharpen_count}</td>
+                                    <td>${item.last_removed ? item.last_removed.toFixed(3) + '"' : '-'}</td>
+                                    <td>${item.avg_removed ? item.avg_removed.toFixed(3) + '"' : '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+                container.innerHTML = html;
+            }
+
+            document.getElementById('materialStatsSection').classList.remove('hidden');
         }
 
         function showError(message) {

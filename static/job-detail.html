@@ -94,7 +94,7 @@
             }
         }
 
-        function displayCamItems(camItems, job) {
+        async function displayCamItems(camItems, job) {
             // Group by set
             const sets = {};
             camItems.forEach(cam => {
@@ -104,24 +104,37 @@
                 sets[cam.set_no].push(cam);
             });
 
+            // Fetch sharpen stats for all cams
+            const statsPromises = camItems.map(cam =>
+                fetch(`/api/cam-items/${cam.id}/sharpen-stats`)
+                    .then(r => r.json())
+                    .then(stats => ({cam_id: cam.id, stats}))
+                    .catch(() => ({cam_id: cam.id, stats: null}))
+            );
+            const statsResults = await Promise.all(statsPromises);
+            const statsMap = {};
+            statsResults.forEach(r => {
+                statsMap[r.cam_id] = r.stats;
+            });
+
             let html = '<div class="table-responsive"><table class="table"><thead><tr>';
-            html += '<th>Set</th><th>Cam</th><th>Station</th><th>Last Update</th>';
-            html += '<th>Enter Die Steel</th><th>Exit Die Steel</th><th>Notes</th>';
+            html += '<th>Set</th><th>Cam</th><th>Station</th><th>Sharpen Count</th><th>Last Removed</th><th>Avg Removed</th><th>Notes</th>';
             html += '</tr></thead><tbody>';
 
             Object.keys(sets).sort((a, b) => parseInt(a) - parseInt(b)).forEach(setNo => {
                 const cams = sets[setNo].sort((a, b) => a.cam_no - b.cam_no);
 
                 cams.forEach((cam, index) => {
+                    const stats = statsMap[cam.id];
                     html += '<tr>';
                     if (index === 0) {
                         html += `<td rowspan="${cams.length}"><strong>Set ${setNo}</strong></td>`;
                     }
                     html += `<td>${cam.cam_no}</td>`;
                     html += `<td><span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span></td>`;
-                    html += `<td>${formatDateTime(cam.status_updated_at)}</td>`;
-                    html += `<td>${cam.enter_die_steel || '-'}</td>`;
-                    html += `<td>${cam.exit_die_steel || '-'}</td>`;
+                    html += `<td>${stats ? stats.sharpen_count : 0}</td>`;
+                    html += `<td>${stats && stats.last_material_removed ? stats.last_material_removed.toFixed(3) + '"' : '-'}</td>`;
+                    html += `<td>${stats && stats.avg_material_removed ? stats.avg_material_removed.toFixed(3) + '"' : '-'}</td>`;
                     html += `<td>${cam.notes || '-'}</td>`;
                     html += '</tr>';
                 });
