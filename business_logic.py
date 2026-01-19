@@ -209,7 +209,8 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
     }
 
 def calculate_priority(available_sets: int, refill_count: int, priority_level: str,
-                       all_in_sharpen: bool = False) -> Tuple[int, int, str]:
+                       all_in_sharpen: bool = False,
+                       no_cabinet_with_active_set: bool = False) -> Tuple[int, int, str]:
     """
     Calculate job priority score based on multiple factors.
 
@@ -217,6 +218,7 @@ def calculate_priority(available_sets: int, refill_count: int, priority_level: s
     - Base priority from admin setting: 0 (low) to 4 (top)
     - Priority score = base + adjustments:
       - If all_in_sharpen: +100 (massive boost to top of list)
+      - If no cams in cabinet AND at least one active set: +2
       - If available_sets == 1: +1
       - If available_sets == 0: +2
       - If refill_count >= 3: +1
@@ -232,6 +234,10 @@ def calculate_priority(available_sets: int, refill_count: int, priority_level: s
     # All in sharpen gets massive boost (goes to top of hot list)
     if all_in_sharpen:
         priority_score += 100
+
+    # No cams in cabinet but has at least one active set (urgent situation)
+    if no_cabinet_with_active_set:
+        priority_score += 2
 
     # Available sets adjustment
     if available_sets == 0:
@@ -303,12 +309,28 @@ async def generate_hot_list(db) -> List[Dict]:
         all_in_sharpen = (job_dict['total_count'] > 0 and
                          job_dict['sharpen_count'] == job_dict['total_count'])
 
+        # Check if no cams in cabinet AND at least one complete active set
+        no_cabinet_with_active_set = False
+        if job_dict['cabinet_count'] == 0 and job_dict['active_count'] > 0:
+            # Check if there's at least one set where ALL cams are active
+            cursor = await db.execute("""
+                SELECT set_no, COUNT(*) as set_size,
+                       COUNT(CASE WHEN status_station = 'active' THEN 1 END) as active_in_set
+                FROM cam_items
+                WHERE job_id = ?
+                GROUP BY set_no
+                HAVING set_size = active_in_set AND active_in_set > 0
+            """, (job_dict['id'],))
+            active_sets = await cursor.fetchall()
+            no_cabinet_with_active_set = len(active_sets) > 0
+
         # Calculate priority
         base_priority, priority_score, label = calculate_priority(
             available_sets=job_dict['available_sets'],
             refill_count=job_dict['refill_count'],
             priority_level=job_dict['priority_level'] or 'low',
-            all_in_sharpen=all_in_sharpen
+            all_in_sharpen=all_in_sharpen,
+            no_cabinet_with_active_set=no_cabinet_with_active_set
         )
 
         hot_list.append({
