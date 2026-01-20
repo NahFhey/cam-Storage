@@ -1,13 +1,16 @@
 """
 FastAPI backend for CAM Tracking Kiosk
 """
-from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status
+from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import Optional, List
 from datetime import datetime, timedelta
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import aiosqlite
 import csv
 import io
@@ -35,6 +38,11 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(title="CAM Tracking Kiosk API", version="1.0.0")
+
+# Rate limiting setup
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Security setup for HTTP Basic Auth
 security = HTTPBasic()
@@ -72,52 +80,121 @@ def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(securit
 # Serve static files (frontend)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Pydantic models for request/response
+# Pydantic models for request/response with validation
 class JobCreate(BaseModel):
-    s_number: str
-    title: Optional[str] = None
-    priority_level: str = "low"
-    notes: Optional[str] = None
+    s_number: str = Field(..., min_length=1, max_length=50, description="Job S-number (e.g., 'S1793')")
+    title: Optional[str] = Field(None, max_length=200, description="Job title or description")
+    priority_level: str = Field("low", description="Priority level: low, medium, high, urgent, top")
+    notes: Optional[str] = Field(None, max_length=1000, description="Additional notes")
+
+    @validator('s_number')
+    def validate_s_number(cls, v):
+        """Ensure S-number follows expected format"""
+        if not v:
+            raise ValueError('S-number cannot be empty')
+        # Allow with or without 'S' prefix
+        cleaned = v.upper().replace('S', '')
+        if not cleaned.isdigit():
+            raise ValueError('S-number must be numeric (e.g., S1793 or 1793)')
+        return v.upper()
+
+    @validator('priority_level')
+    def validate_priority(cls, v):
+        """Validate priority level"""
+        if v not in config.PRIORITY_LEVELS:
+            raise ValueError(f'Priority must be one of: {", ".join(config.PRIORITY_LEVELS)}')
+        return v
 
 class JobUpdate(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(None, max_length=200)
     priority_level: Optional[str] = None
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(None, max_length=1000)
+
+    @validator('priority_level')
+    def validate_priority(cls, v):
+        """Validate priority level"""
+        if v is not None and v not in config.PRIORITY_LEVELS:
+            raise ValueError(f'Priority must be one of: {", ".join(config.PRIORITY_LEVELS)}')
+        return v
 
 class CamItemCreate(BaseModel):
-    job_id: int
-    set_no: int
-    cam_no: int
-    die_position: Optional[str] = None
-    enter_die_steel: Optional[str] = None
-    exit_die_steel: Optional[str] = None
-    status_station: str = "cabinet"
-    notes: Optional[str] = None
-    eol_cycles_expected: Optional[int] = None
+    job_id: int = Field(..., gt=0, description="Job ID")
+    set_no: int = Field(..., gt=0, le=999, description="Set number (1-999)")
+    cam_no: int = Field(..., gt=0, le=999, description="CAM number (1-999)")
+    die_position: Optional[str] = Field(None, description="Die position: upper or lower")
+    enter_die_steel: Optional[str] = Field(None, max_length=50)
+    exit_die_steel: Optional[str] = Field(None, max_length=50)
+    status_station: str = Field("cabinet", description="Initial station")
+    notes: Optional[str] = Field(None, max_length=1000)
+    eol_cycles_expected: Optional[int] = Field(None, ge=0, description="Expected end-of-life cycles")
+
+    @validator('die_position')
+    def validate_die_position(cls, v):
+        """Validate die position"""
+        if v is not None and v not in config.DIE_POSITIONS:
+            raise ValueError(f'Die position must be one of: {", ".join(config.DIE_POSITIONS)}')
+        return v
+
+    @validator('status_station')
+    def validate_station(cls, v):
+        """Validate station"""
+        if v not in config.STATIONS:
+            raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
+        return v
 
 class CamItemUpdate(BaseModel):
     die_position: Optional[str] = None
-    enter_die_steel: Optional[str] = None
-    exit_die_steel: Optional[str] = None
-    notes: Optional[str] = None
-    eol_cycles_expected: Optional[int] = None
+    enter_die_steel: Optional[str] = Field(None, max_length=50)
+    exit_die_steel: Optional[str] = Field(None, max_length=50)
+    notes: Optional[str] = Field(None, max_length=1000)
+    eol_cycles_expected: Optional[int] = Field(None, ge=0)
+
+    @validator('die_position')
+    def validate_die_position(cls, v):
+        """Validate die position"""
+        if v is not None and v not in config.DIE_POSITIONS:
+            raise ValueError(f'Die position must be one of: {", ".join(config.DIE_POSITIONS)}')
+        return v
 
 class CamItemBulkCreate(BaseModel):
-    job_id: int
-    sets: List[int]  # e.g., [1, 2, 3]
-    cams_per_set: int  # e.g., 4
-    initial_station: str = "cabinet"
+    job_id: int = Field(..., gt=0)
+    sets: List[int] = Field(..., min_items=1, max_items=100, description="List of set numbers")
+    cams_per_set: int = Field(..., gt=0, le=100, description="Number of CAMs per set")
+    initial_station: str = Field("cabinet", description="Initial station for all items")
+
+    @validator('sets')
+    def validate_sets(cls, v):
+        """Validate set numbers are positive and unique"""
+        if not all(s > 0 for s in v):
+            raise ValueError('All set numbers must be positive')
+        if len(v) != len(set(v)):
+            raise ValueError('Set numbers must be unique')
+        return v
+
+    @validator('initial_station')
+    def validate_station(cls, v):
+        """Validate station"""
+        if v not in config.STATIONS:
+            raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
+        return v
 
 class MoveRequest(BaseModel):
-    cam_item_id: int
-    to_station: str
-    operator: Optional[str] = None
-    notes: Optional[str] = None
+    cam_item_id: int = Field(..., gt=0)
+    to_station: str = Field(..., description="Destination station")
+    operator: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = Field(None, max_length=500)
     auto_bump: Optional[bool] = None
-    material_removed: Optional[float] = None
+    material_removed: Optional[float] = Field(None, ge=0.0, le=1.0, description="Material removed in inches (0-1)")
+
+    @validator('to_station')
+    def validate_station(cls, v):
+        """Validate station"""
+        if v not in config.STATIONS:
+            raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
+        return v
 
 class EntryResolveRequest(BaseModel):
-    entry: str
+    entry: str = Field(..., min_length=1, max_length=100, description="Manual entry string")
 
 class ConfigUpdate(BaseModel):
     auto_bump_enabled: Optional[bool] = None
@@ -127,16 +204,100 @@ class ConfigUpdate(BaseModel):
 async def root():
     return FileResponse("static/index.html")
 
+# Health check endpoint
+@app.get("/health")
+async def health_check(db: aiosqlite.Connection = Depends(get_db)):
+    """
+    Health check endpoint for monitoring.
+
+    Returns service status and database connectivity.
+    """
+    try:
+        # Test database connection
+        await db.execute("SELECT 1")
+
+        # Check disk space
+        import shutil
+        stats = shutil.disk_usage(os.path.dirname(config.DATABASE_PATH))
+        free_gb = stats.free / (1024**3)
+        total_gb = stats.total / (1024**3)
+
+        # Get database stats
+        cursor = await db.execute("SELECT COUNT(*) as count FROM jobs")
+        jobs_count = (await cursor.fetchone())['count']
+
+        cursor = await db.execute("SELECT COUNT(*) as count FROM cam_items")
+        cams_count = (await cursor.fetchone())['count']
+
+        cursor = await db.execute("SELECT COUNT(*) as count FROM moves WHERE undone = 0")
+        moves_count = (await cursor.fetchone())['count']
+
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "database": {
+                "status": "connected",
+                "path": config.DATABASE_PATH,
+                "jobs_count": jobs_count,
+                "cams_count": cams_count,
+                "moves_count": moves_count
+            },
+            "disk": {
+                "free_gb": round(free_gb, 2),
+                "total_gb": round(total_gb, 2),
+                "used_percent": round((1 - free_gb / total_gb) * 100, 1)
+            },
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return Response(
+            content=f'{{"status":"unhealthy","error":"{str(e)}"}}',
+            status_code=503,
+            media_type="application/json"
+        )
+
 # ========== Jobs Endpoints ==========
 
 @app.get("/api/jobs")
-async def list_jobs(db: aiosqlite.Connection = Depends(get_db)):
-    """List all jobs"""
+@limiter.limit("100/minute")
+async def list_jobs(
+    request: Request,
+    skip: int = 0,
+    limit: int = 100,
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """
+    List jobs with pagination.
+
+    Args:
+        skip: Number of records to skip (default: 0)
+        limit: Maximum number of records to return (default: 100, max: 500)
+
+    Returns:
+        Dictionary with items, total count, skip, and limit
+    """
+    # Enforce maximum limit
+    limit = min(limit, 500)
+
+    # Get total count
+    cursor = await db.execute("SELECT COUNT(*) as count FROM jobs")
+    total = (await cursor.fetchone())['count']
+
+    # Get paginated results
     cursor = await db.execute(
-        "SELECT * FROM jobs ORDER BY created_at DESC"
+        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (limit, skip)
     )
     jobs = await cursor.fetchall()
-    return [dict(job) for job in jobs]
+
+    return {
+        "items": [dict(job) for job in jobs],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "has_more": (skip + limit) < total
+    }
 
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
@@ -164,7 +325,9 @@ async def get_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
     }
 
 @app.post("/api/jobs")
+@limiter.limit("50/minute")
 async def create_job(
+    request: Request,
     job: JobCreate,
     db: aiosqlite.Connection = Depends(get_db),
     admin_user: str = Depends(verify_admin_credentials)
@@ -248,28 +411,64 @@ async def delete_job(
 # ========== CAM Items Endpoints ==========
 
 @app.get("/api/cam-items")
+@limiter.limit("150/minute")
 async def list_cam_items(
+    request: Request,
     job_id: Optional[int] = None,
     station: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
     db: aiosqlite.Connection = Depends(get_db)
 ):
-    """List cam items with optional filters"""
-    query = "SELECT * FROM cam_items WHERE 1=1"
+    """
+    List cam items with optional filters and pagination.
+
+    Args:
+        job_id: Filter by job ID
+        station: Filter by station
+        skip: Number of records to skip (default: 0)
+        limit: Maximum number of records to return (default: 100, max: 500)
+    """
+    # Enforce maximum limit
+    limit = min(limit, 500)
+
+    # Build query
+    where_clauses = ["1=1"]
     params = []
 
     if job_id:
-        query += " AND job_id = ?"
+        where_clauses.append("job_id = ?")
         params.append(job_id)
 
     if station:
-        query += " AND status_station = ?"
+        if station not in config.STATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid station. Must be one of: {', '.join(config.STATIONS)}"
+            )
+        where_clauses.append("status_station = ?")
         params.append(station)
 
-    query += " ORDER BY status_updated_at DESC"
+    where_sql = " AND ".join(where_clauses)
 
-    cursor = await db.execute(query, params)
+    # Get total count
+    count_query = f"SELECT COUNT(*) as count FROM cam_items WHERE {where_sql}"
+    cursor = await db.execute(count_query, params)
+    total = (await cursor.fetchone())['count']
+
+    # Get paginated results
+    query = f"SELECT * FROM cam_items WHERE {where_sql} ORDER BY status_updated_at DESC LIMIT ? OFFSET ?"
+    cursor = await db.execute(query, params + [limit, skip])
     items = await cursor.fetchall()
-    return [dict(item) for item in items]
+
+    return {
+        "items": [dict(item) for item in items],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "has_more": (skip + limit) < total,
+        "filters": {"job_id": job_id, "station": station}
+    }
 
 @app.get("/api/cam-items/{cam_item_id}")
 async def get_cam_item(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
@@ -458,7 +657,9 @@ async def create_cam_items_bulk(
 # ========== Entry Resolution Endpoint ==========
 
 @app.post("/api/resolve-entry")
+@limiter.limit("200/minute")
 async def resolve_entry_endpoint(
+    req: Request,
     request: EntryResolveRequest,
     db: aiosqlite.Connection = Depends(get_db)
 ):
@@ -480,7 +681,8 @@ async def resolve_entry_endpoint(
 # ========== Move Operations Endpoints ==========
 
 @app.post("/api/moves")
-async def move_cam(move: MoveRequest, db: aiosqlite.Connection = Depends(get_db)):
+@limiter.limit("200/minute")
+async def move_cam(request: Request, move: MoveRequest, db: aiosqlite.Connection = Depends(get_db)):
     """Move a cam item to a new station"""
     try:
         # Get current cam state to check from_station
@@ -616,7 +818,9 @@ async def get_hot_list(db: aiosqlite.Connection = Depends(get_db)):
 # ========== Search Endpoint ==========
 
 @app.get("/api/search")
+@limiter.limit("100/minute")
 async def search(
+    request: Request,
     q: str,
     db: aiosqlite.Connection = Depends(get_db)
 ):
