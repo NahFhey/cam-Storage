@@ -3,9 +3,13 @@ Database schema and initialization for CAM Tracking Kiosk
 """
 import sqlite3
 import aiosqlite
+import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 import config
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 # SQL schema definition
 SCHEMA_SQL = """
@@ -82,15 +86,17 @@ def init_database(db_path: str = None):
         db_path = config.DATABASE_PATH
 
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_SQL)
     conn.commit()
     conn.close()
-    print(f"Database initialized at {db_path}")
+    logger.info(f"Database initialized at {db_path}")
 
 async def get_db():
     """Get async database connection (for FastAPI dependency injection)"""
     async with aiosqlite.connect(config.DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA foreign_keys = ON")
         yield db
 
 @asynccontextmanager
@@ -98,6 +104,7 @@ async def get_db_connection():
     """Get async database connection (context manager for manual use)"""
     async with aiosqlite.connect(config.DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA foreign_keys = ON")
         yield db
 
 async def get_config_value(key: str, default: str = None) -> Optional[str]:
@@ -122,21 +129,22 @@ def migrate_database(db_path: str = None):
         db_path = config.DATABASE_PATH
 
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON")
     cursor = conn.cursor()
 
-    print("Checking for database migrations...")
+    logger.info("Checking for database migrations...")
 
     # Check if priority_base exists (old schema)
     cursor.execute("PRAGMA table_info(jobs)")
     columns = [col[1] for col in cursor.fetchall()]
 
     if 'priority_base' in columns:
-        print("  Migrating jobs table: priority_base -> priority_level...")
+        logger.info("  Migrating jobs table: priority_base -> priority_level...")
         # Add new column
         try:
             cursor.execute("ALTER TABLE jobs ADD COLUMN priority_level TEXT DEFAULT 'low'")
         except sqlite3.OperationalError:
-            pass  # Column might already exist
+            logger.warning("    Column priority_level already exists, skipping")
 
         # Migrate data: 0=low, 1=medium, 2=high, 3+=urgent
         cursor.execute("""
@@ -149,29 +157,29 @@ def migrate_database(db_path: str = None):
                 END
             WHERE priority_level IS NULL OR priority_level = 'low'
         """)
-        print("    Migrated priority values")
+        logger.info("    Migrated priority values")
 
     # Check if die_position exists
     cursor.execute("PRAGMA table_info(cam_items)")
     columns = [col[1] for col in cursor.fetchall()]
 
     if 'die_position' not in columns:
-        print("  Adding die_position column to cam_items...")
+        logger.info("  Adding die_position column to cam_items...")
         cursor.execute("ALTER TABLE cam_items ADD COLUMN die_position TEXT")
-        print("    Added die_position column (defaults to NULL)")
+        logger.info("    Added die_position column (defaults to NULL)")
 
     # Check if material_removed exists
     cursor.execute("PRAGMA table_info(moves)")
     columns = [col[1] for col in cursor.fetchall()]
 
     if 'material_removed' not in columns:
-        print("  Adding material_removed column to moves...")
+        logger.info("  Adding material_removed column to moves...")
         cursor.execute("ALTER TABLE moves ADD COLUMN material_removed REAL")
-        print("    Added material_removed column (defaults to NULL)")
+        logger.info("    Added material_removed column (defaults to NULL)")
 
     conn.commit()
     conn.close()
-    print("✓ Database migration complete")
+    logger.info("✓ Database migration complete")
 
 if __name__ == "__main__":
     # Allow running this script directly to initialize database

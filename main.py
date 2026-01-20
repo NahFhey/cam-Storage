@@ -1,9 +1,10 @@
 """
 FastAPI backend for CAM Tracking Kiosk
 """
-from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -11,14 +12,62 @@ import aiosqlite
 import csv
 import io
 import shutil
+import logging
+import sys
+import secrets
+import os
 
 import config
 from database import get_db, get_config_value, set_config_value, init_database
 from entry_parser import parse_manual_entry, resolve_entry
 from business_logic import move_cam_to_station, undo_last_move, generate_hot_list
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('cam_tracking.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # Initialize FastAPI app
 app = FastAPI(title="CAM Tracking Kiosk API", version="1.0.0")
+
+# Security setup for HTTP Basic Auth
+security = HTTPBasic()
+
+# Admin credentials from environment variables
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")  # Change this default!
+
+def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+    """
+    Verify admin credentials using HTTP Basic Auth.
+    Returns username if valid, raises HTTPException if invalid.
+    """
+    # Use secrets.compare_digest to prevent timing attacks
+    username_correct = secrets.compare_digest(
+        credentials.username.encode("utf8"),
+        ADMIN_USERNAME.encode("utf8")
+    )
+    password_correct = secrets.compare_digest(
+        credentials.password.encode("utf8"),
+        ADMIN_PASSWORD.encode("utf8")
+    )
+
+    if not (username_correct and password_correct):
+        logger.warning(f"Failed admin login attempt for username: {credentials.username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    logger.info(f"Admin user '{credentials.username}' authenticated successfully")
+    return credentials.username
 
 # Serve static files (frontend)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -115,8 +164,12 @@ async def get_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
     }
 
 @app.post("/api/jobs")
-async def create_job(job: JobCreate, db: aiosqlite.Connection = Depends(get_db)):
-    """Create a new job"""
+async def create_job(
+    job: JobCreate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: str = Depends(verify_admin_credentials)
+):
+    """Create a new job (requires admin authentication)"""
     # Validate priority level
     if job.priority_level not in config.PRIORITY_LEVELS:
         raise HTTPException(
@@ -142,13 +195,19 @@ async def create_job(job: JobCreate, db: aiosqlite.Connection = Depends(get_db))
         raise HTTPException(status_code=400, detail=f"Job {job.s_number} already exists")
 
 @app.patch("/api/jobs/{job_id}")
-async def update_job(job_id: int, job: JobUpdate, db: aiosqlite.Connection = Depends(get_db)):
-    """Update a job"""
-    updates = []
+async def update_job(
+    job_id: int,
+    job: JobUpdate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: str = Depends(verify_admin_credentials)
+):
+    """Update a job (requires admin authentication)"""
+    # Build update query safely with explicit field mapping
+    update_parts = []
     values = []
 
     if job.title is not None:
-        updates.append("title = ?")
+        update_parts.append("title = ?")
         values.append(job.title)
     if job.priority_level is not None:
         if job.priority_level not in config.PRIORITY_LEVELS:
@@ -156,20 +215,19 @@ async def update_job(job_id: int, job: JobUpdate, db: aiosqlite.Connection = Dep
                 status_code=400,
                 detail=f"Invalid priority level. Must be one of: {', '.join(config.PRIORITY_LEVELS)}"
             )
-        updates.append("priority_level = ?")
+        update_parts.append("priority_level = ?")
         values.append(job.priority_level)
     if job.notes is not None:
-        updates.append("notes = ?")
+        update_parts.append("notes = ?")
         values.append(job.notes)
 
-    if not updates:
+    if not update_parts:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     values.append(job_id)
-    await db.execute(
-        f"UPDATE jobs SET {', '.join(updates)} WHERE id = ?",
-        values
-    )
+    # Safe: update_parts only contains literal strings we control
+    query = f"UPDATE jobs SET {', '.join(update_parts)} WHERE id = ?"
+    await db.execute(query, values)
     await db.commit()
 
     cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
@@ -177,8 +235,12 @@ async def update_job(job_id: int, job: JobUpdate, db: aiosqlite.Connection = Dep
     return dict(updated_job)
 
 @app.delete("/api/jobs/{job_id}")
-async def delete_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
-    """Delete a job (cascades to cam items and moves)"""
+async def delete_job(
+    job_id: int,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: str = Depends(verify_admin_credentials)
+):
+    """Delete a job (requires admin authentication, cascades to cam items and moves)"""
     await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     await db.commit()
     return {"success": True, "message": "Job deleted"}
@@ -240,8 +302,12 @@ async def get_cam_item(cam_item_id: int, db: aiosqlite.Connection = Depends(get_
     }
 
 @app.post("/api/cam-items")
-async def create_cam_item(item: CamItemCreate, db: aiosqlite.Connection = Depends(get_db)):
-    """Create a single cam item"""
+async def create_cam_item(
+    item: CamItemCreate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: str = Depends(verify_admin_credentials)
+):
+    """Create a single cam item (requires admin authentication)"""
     if item.status_station not in config.STATIONS:
         raise HTTPException(status_code=400, detail=f"Invalid station: {item.status_station}")
 
@@ -285,9 +351,15 @@ async def create_cam_item(item: CamItemCreate, db: aiosqlite.Connection = Depend
         )
 
 @app.patch("/api/cam-items/{cam_item_id}")
-async def update_cam_item(cam_item_id: int, item: CamItemUpdate, db: aiosqlite.Connection = Depends(get_db)):
-    """Update a CAM item (die steel info, notes, etc.)"""
-    updates = []
+async def update_cam_item(
+    cam_item_id: int,
+    item: CamItemUpdate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: str = Depends(verify_admin_credentials)
+):
+    """Update a CAM item (requires admin authentication - die steel info, notes, etc.)"""
+    # Build update query safely with explicit field mapping
+    update_parts = []
     values = []
 
     if item.die_position is not None:
@@ -296,33 +368,32 @@ async def update_cam_item(cam_item_id: int, item: CamItemUpdate, db: aiosqlite.C
                 status_code=400,
                 detail=f"Invalid die position. Must be one of: {', '.join(config.DIE_POSITIONS)}"
             )
-        updates.append("die_position = ?")
+        update_parts.append("die_position = ?")
         values.append(item.die_position)
 
     if item.enter_die_steel is not None:
-        updates.append("enter_die_steel = ?")
+        update_parts.append("enter_die_steel = ?")
         values.append(item.enter_die_steel)
 
     if item.exit_die_steel is not None:
-        updates.append("exit_die_steel = ?")
+        update_parts.append("exit_die_steel = ?")
         values.append(item.exit_die_steel)
 
     if item.notes is not None:
-        updates.append("notes = ?")
+        update_parts.append("notes = ?")
         values.append(item.notes)
 
     if item.eol_cycles_expected is not None:
-        updates.append("eol_cycles_expected = ?")
+        update_parts.append("eol_cycles_expected = ?")
         values.append(item.eol_cycles_expected)
 
-    if not updates:
+    if not update_parts:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     values.append(cam_item_id)
-    await db.execute(
-        f"UPDATE cam_items SET {', '.join(updates)} WHERE id = ?",
-        values
-    )
+    # Safe: update_parts only contains literal strings we control
+    query = f"UPDATE cam_items SET {', '.join(update_parts)} WHERE id = ?"
+    await db.execute(query, values)
     await db.commit()
 
     cursor = await db.execute("SELECT * FROM cam_items WHERE id = ?", (cam_item_id,))
@@ -334,8 +405,12 @@ async def update_cam_item(cam_item_id: int, item: CamItemUpdate, db: aiosqlite.C
     return dict(updated_item)
 
 @app.post("/api/cam-items/bulk")
-async def create_cam_items_bulk(bulk: CamItemBulkCreate, db: aiosqlite.Connection = Depends(get_db)):
-    """Create multiple cam items for a job (sets x cams_per_set)"""
+async def create_cam_items_bulk(
+    bulk: CamItemBulkCreate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: str = Depends(verify_admin_credentials)
+):
+    """Create multiple cam items for a job (requires admin authentication - sets x cams_per_set)"""
     if bulk.initial_station not in config.STATIONS:
         raise HTTPException(status_code=400, detail=f"Invalid station: {bulk.initial_station}")
 
@@ -688,8 +763,11 @@ async def get_config():
     }
 
 @app.patch("/api/config")
-async def update_config(config_update: ConfigUpdate):
-    """Update configuration"""
+async def update_config(
+    config_update: ConfigUpdate,
+    admin_user: str = Depends(verify_admin_credentials)
+):
+    """Update configuration (requires admin authentication)"""
     if config_update.auto_bump_enabled is not None:
         await set_config_value(
             'auto_bump_enabled',
@@ -818,9 +896,12 @@ async def export_database():
     )
 
 @app.post("/api/import/database")
-async def import_database(file: UploadFile = File(...)):
+async def import_database(
+    file: UploadFile = File(...),
+    admin_user: str = Depends(verify_admin_credentials)
+):
     """
-    Import/restore a SQLite database file.
+    Import/restore a SQLite database file (requires admin authentication).
     WARNING: This replaces ALL current data!
     """
     import os
@@ -835,13 +916,33 @@ async def import_database(file: UploadFile = File(...)):
             detail="Invalid file type. Must be a SQLite database file (.db, .sqlite, or .sqlite3)"
         )
 
+    # Define max file size (100MB)
+    MAX_FILE_SIZE = 100 * 1024 * 1024
+
+    # Read and validate file size
+    content = await file.read()
+    file_size = len(content)
+
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is 100MB, uploaded file is {file_size / (1024*1024):.2f}MB"
+        )
+
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty"
+        )
+
+    logger.info(f"Admin '{admin_user}' uploading database file: {file.filename} ({file_size / (1024*1024):.2f}MB)")
+
     # Create a temporary file to validate the uploaded database
     with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
         temp_path = temp_file.name
 
         try:
             # Write uploaded file to temp location
-            content = await file.read()
             temp_file.write(content)
             temp_file.flush()
 
@@ -888,6 +989,8 @@ async def import_database(file: UploadFile = File(...)):
             # Replace current database with uploaded one
             shutil.move(temp_path, config.DATABASE_PATH)
 
+            logger.info(f"Database imported successfully by admin '{admin_user}'. Jobs: {jobs_count}, CAMs: {cam_items_count}, Moves: {moves_count}")
+
             return {
                 "message": "Database imported successfully",
                 "backup_created": backup_path if os.path.exists(backup_path) else None,
@@ -905,6 +1008,7 @@ async def import_database(file: UploadFile = File(...)):
             # Clean up temp file
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
+            logger.error(f"Database import failed for admin '{admin_user}': {str(e)}")
             raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
 if __name__ == "__main__":
