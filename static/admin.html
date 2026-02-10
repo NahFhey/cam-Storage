@@ -34,6 +34,46 @@
             <button id="saveConfigBtn" class="btn btn-success">Save Configuration</button>
         </div>
 
+        <!-- User Management -->
+        <div class="card">
+            <h2 class="card-header">User Management</h2>
+            <div id="userAlerts"></div>
+
+            <div id="usersListContent">
+                <p class="text-center">Loading users...</p>
+            </div>
+
+            <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #ddd;">
+
+            <h3 style="margin-bottom: 1rem;">Add New User</h3>
+            <form id="createUserForm">
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label" for="newUsername">Username</label>
+                        <input type="text" id="newUsername" class="form-input" placeholder="e.g., jsmith" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="newDisplayName">Display Name</label>
+                        <input type="text" id="newDisplayName" class="form-input" placeholder="e.g., John Smith" required>
+                    </div>
+                </div>
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label" for="newPin">PIN (min 4 characters)</label>
+                        <input type="password" id="newPin" class="form-input" placeholder="Enter PIN" minlength="4" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="newRole">Role</label>
+                        <select id="newRole" class="form-select">
+                            <option value="user" selected>User</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-success">Add User</button>
+            </form>
+        </div>
+
         <!-- Create Job -->
         <div class="card">
             <h2 class="card-header">Create New Job</h2>
@@ -172,6 +212,7 @@
     </div>
 
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/auth.js"></script>
     <script>
         // Configuration
         const autoBumpCheckbox = document.getElementById('autoBumpCheckbox');
@@ -577,10 +618,173 @@
             setTimeout(() => alertDiv.remove(), 5000);
         }
 
+        // ========== User Management ==========
+
+        const createUserForm = document.getElementById('createUserForm');
+
+        createUserForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+
+            try {
+                const userData = {
+                    username: document.getElementById('newUsername').value.trim(),
+                    display_name: document.getElementById('newDisplayName').value.trim(),
+                    pin: document.getElementById('newPin').value,
+                    role: document.getElementById('newRole').value
+                };
+
+                await createUser(userData);
+                showUserAlert(`User '${userData.display_name}' created successfully`, 'success');
+                createUserForm.reset();
+                loadUsers();
+            } catch (error) {
+                showUserAlert(error.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+
+        async function loadUsers() {
+            const content = document.getElementById('usersListContent');
+            try {
+                const users = await getUsers();
+                if (users.length === 0) {
+                    content.innerHTML = '<p class="text-center">No users found.</p>';
+                    return;
+                }
+
+                content.innerHTML = `
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Display Name</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${users.map(user => `
+                                <tr data-user-id="${user.id}" style="${!user.active ? 'opacity: 0.5;' : ''}">
+                                    <td><strong>${user.username}</strong></td>
+                                    <td>${user.display_name}</td>
+                                    <td>
+                                        <select class="form-select user-role-select" data-user-id="${user.id}" style="padding: 0.5rem;" ${!user.active ? 'disabled' : ''}>
+                                            <option value="user" ${user.role === 'user' ? 'selected' : ''}>User</option>
+                                            <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option>
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <span class="badge ${user.active ? 'badge-active' : 'badge-low'}">
+                                            ${user.active ? 'Active' : 'Inactive'}
+                                        </span>
+                                    </td>
+                                    <td style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                        <button class="btn btn-primary reset-pin-btn" data-user-id="${user.id}" data-username="${user.username}" style="padding: 0.5rem 1rem; min-height: auto;" ${!user.active ? 'disabled' : ''}>
+                                            Reset PIN
+                                        </button>
+                                        ${user.active ?
+                                            `<button class="btn btn-danger deactivate-btn" data-user-id="${user.id}" data-username="${user.username}" style="padding: 0.5rem 1rem; min-height: auto;">
+                                                Deactivate
+                                            </button>` :
+                                            `<button class="btn btn-success reactivate-btn" data-user-id="${user.id}" data-username="${user.username}" style="padding: 0.5rem 1rem; min-height: auto;">
+                                                Reactivate
+                                            </button>`
+                                        }
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+
+                // Role change handlers
+                document.querySelectorAll('.user-role-select').forEach(select => {
+                    select.addEventListener('change', async (e) => {
+                        const userId = parseInt(e.target.dataset.userId);
+                        e.target.disabled = true;
+                        try {
+                            await updateUser(userId, { role: e.target.value });
+                            e.target.style.backgroundColor = '#dcfce7';
+                            setTimeout(() => { e.target.style.backgroundColor = ''; }, 1000);
+                            showUserAlert('Role updated', 'success');
+                        } catch (error) {
+                            showUserAlert(error.message, 'error');
+                            loadUsers(); // Reload to reset
+                        } finally {
+                            e.target.disabled = false;
+                        }
+                    });
+                });
+
+                // Reset PIN handlers
+                document.querySelectorAll('.reset-pin-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const userId = parseInt(btn.dataset.userId);
+                        const username = btn.dataset.username;
+                        const newPin = prompt(`Enter new PIN for ${username} (min 4 characters):`);
+                        if (!newPin) return;
+                        if (newPin.length < 4) {
+                            showUserAlert('PIN must be at least 4 characters', 'error');
+                            return;
+                        }
+                        try {
+                            await updateUser(userId, { pin: newPin });
+                            showUserAlert(`PIN reset for ${username}`, 'success');
+                        } catch (error) {
+                            showUserAlert(error.message, 'error');
+                        }
+                    });
+                });
+
+                // Deactivate handlers
+                document.querySelectorAll('.deactivate-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const userId = parseInt(btn.dataset.userId);
+                        const username = btn.dataset.username;
+                        if (!confirm(`Deactivate user '${username}'? They will be logged out.`)) return;
+                        try {
+                            await deleteUser(userId);
+                            showUserAlert(`User '${username}' deactivated`, 'success');
+                            loadUsers();
+                        } catch (error) {
+                            showUserAlert(error.message, 'error');
+                        }
+                    });
+                });
+
+                // Reactivate handlers
+                document.querySelectorAll('.reactivate-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const userId = parseInt(btn.dataset.userId);
+                        const username = btn.dataset.username;
+                        try {
+                            await updateUser(userId, { active: true });
+                            showUserAlert(`User '${username}' reactivated`, 'success');
+                            loadUsers();
+                        } catch (error) {
+                            showUserAlert(error.message, 'error');
+                        }
+                    });
+                });
+
+            } catch (error) {
+                content.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+
+        function showUserAlert(message, type) {
+            showAlertInContainer('userAlerts', message, type);
+        }
+
         // Initialize
         loadConfig();
         loadJobsForBulk();
         loadJobsForEdit();
+        loadUsers();
     </script>
 </body>
 </html>

@@ -2,16 +2,70 @@
 
 const API_BASE = '/api';
 
-// Generic fetch wrapper with error handling
+// ========== Auth Token Management ==========
+
+function getAuthToken() {
+    return localStorage.getItem('cam_auth_token');
+}
+
+function setAuthToken(token) {
+    localStorage.setItem('cam_auth_token', token);
+}
+
+function clearAuthToken() {
+    localStorage.removeItem('cam_auth_token');
+    localStorage.removeItem('cam_current_user');
+}
+
+function getCurrentUser() {
+    const data = localStorage.getItem('cam_current_user');
+    return data ? JSON.parse(data) : null;
+}
+
+function setCurrentUser(user) {
+    localStorage.setItem('cam_current_user', JSON.stringify(user));
+}
+
+function isLoggedIn() {
+    return !!getAuthToken();
+}
+
+function isAdmin() {
+    const user = getCurrentUser();
+    return user && user.role === 'admin';
+}
+
+// Generic fetch wrapper with error handling and auth
 async function apiCall(endpoint, options = {}) {
     try {
+        const headers = {
+            'Content-Type': 'application/json',
+            ...options.headers
+        };
+
+        // Auto-inject auth token
+        const token = getAuthToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const response = await fetch(`${API_BASE}${endpoint}`, {
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers
-            },
-            ...options
+            ...options,
+            headers
         });
+
+        // Handle auth errors
+        if (response.status === 401) {
+            clearAuthToken();
+            if (typeof showLoginOverlay === 'function') {
+                showLoginOverlay();
+            }
+            throw new Error('Session expired. Please log in again.');
+        }
+
+        if (response.status === 403) {
+            throw new Error('Admin access required for this action.');
+        }
 
         if (!response.ok) {
             const error = await response.json();
@@ -29,6 +83,66 @@ async function apiCall(endpoint, options = {}) {
         console.error('API call failed:', error);
         throw error;
     }
+}
+
+// ========== Auth API ==========
+
+async function authLogin(pin) {
+    // Login doesn't need auth token, call fetch directly
+    const response = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin })
+    });
+
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Login failed');
+    }
+
+    const data = await response.json();
+    setAuthToken(data.token);
+    setCurrentUser(data.user);
+    return data;
+}
+
+async function authLogout() {
+    try {
+        await apiCall('/auth/logout', { method: 'POST' });
+    } catch (e) {
+        // Ignore errors on logout
+    }
+    clearAuthToken();
+}
+
+async function authGetMe() {
+    return apiCall('/auth/me');
+}
+
+// ========== Users API (admin) ==========
+
+async function getUsers() {
+    return apiCall('/users');
+}
+
+async function createUser(userData) {
+    return apiCall('/users', {
+        method: 'POST',
+        body: JSON.stringify(userData)
+    });
+}
+
+async function updateUser(userId, updates) {
+    return apiCall(`/users/${userId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updates)
+    });
+}
+
+async function deleteUser(userId) {
+    return apiCall(`/users/${userId}`, {
+        method: 'DELETE'
+    });
 }
 
 // Jobs

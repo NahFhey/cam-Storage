@@ -3,6 +3,8 @@ Database schema and initialization for CAM Tracking Kiosk
 """
 import sqlite3
 import aiosqlite
+import hashlib
+import secrets
 import logging
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -75,6 +77,21 @@ CREATE TABLE IF NOT EXISTS config (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Users table: operators and admins
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    pin_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user', 'admin')),
+    active BOOLEAN NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_active ON users(active);
+
 -- Insert default config values
 INSERT OR IGNORE INTO config (key, value) VALUES ('auto_bump_enabled', 'true');
 INSERT OR IGNORE INTO config (key, value) VALUES ('default_operator', 'kiosk');
@@ -89,6 +106,7 @@ def init_database(db_path: str = None):
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_SQL)
     conn.commit()
+    ensure_default_admin(conn)
     conn.close()
     logger.info(f"Database initialized at {db_path}")
 
@@ -122,6 +140,39 @@ async def set_config_value(key: str, value: str):
             (key, value)
         )
         await db.commit()
+
+def hash_pin(pin: str) -> str:
+    """Hash a PIN with a random salt using PBKDF2"""
+    salt = secrets.token_hex(16)
+    hash_val = hashlib.pbkdf2_hmac('sha256', pin.encode(), salt.encode(), 10000)
+    return f"{salt}:{hash_val.hex()}"
+
+
+def verify_pin(pin: str, pin_hash: str) -> bool:
+    """Verify a PIN against a stored hash"""
+    try:
+        salt, hash_val = pin_hash.split(':')
+        new_hash = hashlib.pbkdf2_hmac('sha256', pin.encode(), salt.encode(), 10000)
+        return secrets.compare_digest(new_hash.hex(), hash_val)
+    except Exception:
+        return False
+
+
+def ensure_default_admin(conn):
+    """Create default admin user if no users exist"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    if count == 0:
+        default_pin = "1234"
+        pin_hash = hash_pin(default_pin)
+        cursor.execute(
+            "INSERT INTO users (username, display_name, pin_hash, role) VALUES (?, ?, ?, ?)",
+            ("admin", "Administrator", pin_hash, "admin")
+        )
+        conn.commit()
+        logger.info("Created default admin user (username: admin, PIN: 1234) - CHANGE THIS!")
+
 
 def migrate_database(db_path: str = None):
     """Migrate existing database to new schema"""
@@ -177,7 +228,31 @@ def migrate_database(db_path: str = None):
         cursor.execute("ALTER TABLE moves ADD COLUMN material_removed REAL")
         logger.info("    Added material_removed column (defaults to NULL)")
 
+    # Check if users table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+    if not cursor.fetchone():
+        logger.info("  Creating users table...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                pin_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user', 'admin')),
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_active ON users(active)")
+        logger.info("    Created users table")
+
     conn.commit()
+
+    # Ensure default admin exists
+    ensure_default_admin(conn)
+
     conn.close()
     logger.info("✓ Database migration complete")
 

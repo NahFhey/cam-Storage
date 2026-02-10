@@ -4,9 +4,8 @@ FastAPI backend for CAM Tracking Kiosk
 from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, validator
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -21,7 +20,7 @@ import secrets
 import os
 
 import config
-from database import get_db, get_config_value, set_config_value, init_database
+from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin
 from entry_parser import parse_manual_entry, resolve_entry
 from business_logic import move_cam_to_station, undo_last_move, generate_hot_list
 
@@ -44,38 +43,81 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Security setup for HTTP Basic Auth
-security = HTTPBasic()
+# ========== Session Management ==========
 
-# Admin credentials from environment variables
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")  # Change this default!
+# In-memory session store: token -> user session dict
+active_sessions: Dict[str, dict] = {}
 
-def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(security)) -> str:
-    """
-    Verify admin credentials using HTTP Basic Auth.
-    Returns username if valid, raises HTTPException if invalid.
-    """
-    # Use secrets.compare_digest to prevent timing attacks
-    username_correct = secrets.compare_digest(
-        credentials.username.encode("utf8"),
-        ADMIN_USERNAME.encode("utf8")
-    )
-    password_correct = secrets.compare_digest(
-        credentials.password.encode("utf8"),
-        ADMIN_PASSWORD.encode("utf8")
-    )
 
-    if not (username_correct and password_correct):
-        logger.warning(f"Failed admin login attempt for username: {credentials.username}")
+def create_session(user: dict) -> str:
+    """Create a new session for a user and return the token"""
+    token = secrets.token_urlsafe(32)
+    active_sessions[token] = {
+        "user_id": user["id"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "role": user["role"],
+        "expires_at": (datetime.now() + timedelta(hours=config.SESSION_DURATION_HOURS)).isoformat()
+    }
+    return token
+
+
+def get_session(token: str) -> Optional[dict]:
+    """Get a valid session by token, or None if expired/missing"""
+    session = active_sessions.get(token)
+    if not session:
+        return None
+    if datetime.fromisoformat(session["expires_at"]) <= datetime.now():
+        del active_sessions[token]
+        return None
+    return session
+
+
+def cleanup_sessions():
+    """Remove expired sessions"""
+    now = datetime.now()
+    expired = [t for t, s in active_sessions.items()
+               if datetime.fromisoformat(s["expires_at"]) <= now]
+    for t in expired:
+        del active_sessions[t]
+
+
+# ========== Auth Dependencies ==========
+
+async def get_current_user(request: Request) -> dict:
+    """Get the current authenticated user from the session token."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid admin credentials",
-            headers={"WWW-Authenticate": "Basic"},
+            detail="Not authenticated"
         )
+    token = auth_header[7:]
+    session = get_session(token)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired or invalid"
+        )
+    return session
 
-    logger.info(f"Admin user '{credentials.username}' authenticated successfully")
-    return credentials.username
+
+async def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
+    """Require admin role."""
+    if user["role"] != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return user
+
+
+async def get_optional_user(request: Request) -> Optional[dict]:
+    """Get the current user if authenticated, None otherwise."""
+    try:
+        return await get_current_user(request)
+    except HTTPException:
+        return None
 
 # Serve static files (frontend)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -199,6 +241,39 @@ class EntryResolveRequest(BaseModel):
 class ConfigUpdate(BaseModel):
     auto_bump_enabled: Optional[bool] = None
 
+class LoginRequest(BaseModel):
+    pin: str = Field(..., min_length=1, max_length=20, description="User PIN")
+
+class UserCreate(BaseModel):
+    username: str = Field(..., min_length=1, max_length=50, description="Unique username")
+    display_name: str = Field(..., min_length=1, max_length=100, description="Display name")
+    pin: str = Field(..., min_length=4, max_length=20, description="Login PIN (min 4 characters)")
+    role: str = Field("user", description="User role: user or admin")
+
+    @validator('role')
+    def validate_role(cls, v):
+        if v not in config.USER_ROLES:
+            raise ValueError(f'Role must be one of: {", ".join(config.USER_ROLES)}')
+        return v
+
+    @validator('username')
+    def validate_username(cls, v):
+        if not v.replace('_', '').replace('-', '').isalnum():
+            raise ValueError('Username must be alphanumeric (underscores and hyphens allowed)')
+        return v.lower()
+
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    pin: Optional[str] = Field(None, min_length=4, max_length=20)
+    role: Optional[str] = None
+    active: Optional[bool] = None
+
+    @validator('role')
+    def validate_role(cls, v):
+        if v is not None and v not in config.USER_ROLES:
+            raise ValueError(f'Role must be one of: {", ".join(config.USER_ROLES)}')
+        return v
+
 # Root endpoint - serve main page
 @app.get("/")
 async def root():
@@ -256,6 +331,224 @@ async def health_check(db: aiosqlite.Connection = Depends(get_db)):
             status_code=503,
             media_type="application/json"
         )
+
+# ========== Auth Endpoints ==========
+
+@app.post("/api/auth/login")
+@limiter.limit("20/minute")
+async def login(request: Request, login_req: LoginRequest, db: aiosqlite.Connection = Depends(get_db)):
+    """Log in by PIN only. The system matches the PIN to a user."""
+    cleanup_sessions()
+
+    cursor = await db.execute(
+        "SELECT id, username, display_name, pin_hash, role FROM users WHERE active = 1"
+    )
+    users = await cursor.fetchall()
+
+    for user in users:
+        if verify_pin(login_req.pin, user["pin_hash"]):
+            user_dict = dict(user)
+            token = create_session(user_dict)
+            logger.info(f"User '{user_dict['username']}' logged in successfully")
+            return {
+                "token": token,
+                "user": {
+                    "id": user_dict["id"],
+                    "username": user_dict["username"],
+                    "display_name": user_dict["display_name"],
+                    "role": user_dict["role"]
+                }
+            }
+
+    logger.warning("Failed login attempt with invalid PIN")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid PIN"
+    )
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    """Log out and invalidate the session."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        if token in active_sessions:
+            session = active_sessions.pop(token)
+            logger.info(f"User '{session['username']}' logged out")
+    return {"success": True}
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    """Get the current authenticated user's info."""
+    return {
+        "user_id": user["user_id"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "role": user["role"]
+    }
+
+
+# ========== User Management Endpoints ==========
+
+@app.get("/api/users")
+async def list_users(
+    admin: dict = Depends(get_admin_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """List all users (admin only). Never returns PIN hashes."""
+    cursor = await db.execute(
+        "SELECT id, username, display_name, role, active, created_at, updated_at FROM users ORDER BY username"
+    )
+    users = await cursor.fetchall()
+    return [dict(u) for u in users]
+
+
+@app.post("/api/users")
+async def create_user(
+    user_data: UserCreate,
+    admin: dict = Depends(get_admin_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Create a new user (admin only)."""
+    # Check that the PIN isn't already used by another active user
+    cursor = await db.execute(
+        "SELECT id, pin_hash FROM users WHERE active = 1"
+    )
+    existing = await cursor.fetchall()
+    for u in existing:
+        if verify_pin(user_data.pin, u["pin_hash"]):
+            raise HTTPException(
+                status_code=400,
+                detail="This PIN is already in use by another user"
+            )
+
+    pin_hashed = hash_pin(user_data.pin)
+    try:
+        cursor = await db.execute(
+            """INSERT INTO users (username, display_name, pin_hash, role)
+               VALUES (?, ?, ?, ?)""",
+            (user_data.username, user_data.display_name, pin_hashed, user_data.role)
+        )
+        await db.commit()
+        user_id = cursor.lastrowid
+        logger.info(f"Admin '{admin['username']}' created user '{user_data.username}' (role: {user_data.role})")
+
+        return {
+            "id": user_id,
+            "username": user_data.username,
+            "display_name": user_data.display_name,
+            "role": user_data.role,
+            "active": True
+        }
+    except aiosqlite.IntegrityError:
+        raise HTTPException(status_code=400, detail=f"Username '{user_data.username}' already exists")
+
+
+@app.patch("/api/users/{user_id}")
+async def update_user(
+    user_id: int,
+    user_data: UserUpdate,
+    admin: dict = Depends(get_admin_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Update a user (admin only)."""
+    # Verify user exists
+    cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    existing_user = await cursor.fetchone()
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_parts = []
+    values = []
+
+    if user_data.display_name is not None:
+        update_parts.append("display_name = ?")
+        values.append(user_data.display_name)
+
+    if user_data.role is not None:
+        update_parts.append("role = ?")
+        values.append(user_data.role)
+
+    if user_data.active is not None:
+        update_parts.append("active = ?")
+        values.append(1 if user_data.active else 0)
+
+    if user_data.pin is not None:
+        # Check PIN uniqueness among other active users
+        cursor = await db.execute(
+            "SELECT id, pin_hash FROM users WHERE active = 1 AND id != ?", (user_id,)
+        )
+        others = await cursor.fetchall()
+        for u in others:
+            if verify_pin(user_data.pin, u["pin_hash"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail="This PIN is already in use by another user"
+                )
+        update_parts.append("pin_hash = ?")
+        values.append(hash_pin(user_data.pin))
+
+    if not update_parts:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    update_parts.append("updated_at = CURRENT_TIMESTAMP")
+    values.append(user_id)
+    query = f"UPDATE users SET {', '.join(update_parts)} WHERE id = ?"
+    await db.execute(query, values)
+    await db.commit()
+
+    # If deactivating, invalidate their sessions
+    if user_data.active is False:
+        tokens_to_remove = [
+            t for t, s in active_sessions.items() if s["user_id"] == user_id
+        ]
+        for t in tokens_to_remove:
+            del active_sessions[t]
+
+    logger.info(f"Admin '{admin['username']}' updated user id={user_id}")
+
+    cursor = await db.execute(
+        "SELECT id, username, display_name, role, active, created_at, updated_at FROM users WHERE id = ?",
+        (user_id,)
+    )
+    updated = await cursor.fetchone()
+    return dict(updated)
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    admin: dict = Depends(get_admin_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Deactivate a user (admin only). Does not delete, just sets active=0."""
+    # Prevent self-deactivation
+    if admin["user_id"] == user_id:
+        raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
+
+    cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    user = await cursor.fetchone()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await db.execute(
+        "UPDATE users SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (user_id,)
+    )
+    await db.commit()
+
+    # Invalidate their sessions
+    tokens_to_remove = [
+        t for t, s in active_sessions.items() if s["user_id"] == user_id
+    ]
+    for t in tokens_to_remove:
+        del active_sessions[t]
+
+    logger.info(f"Admin '{admin['username']}' deactivated user '{user['username']}'")
+    return {"success": True, "message": f"User '{user['username']}' deactivated"}
+
 
 # ========== Jobs Endpoints ==========
 
@@ -330,7 +623,7 @@ async def create_job(
     request: Request,
     job: JobCreate,
     db: aiosqlite.Connection = Depends(get_db),
-    admin_user: str = Depends(verify_admin_credentials)
+    admin_user: dict = Depends(get_admin_user)
 ):
     """Create a new job (requires admin authentication)"""
     # Validate priority level
@@ -362,7 +655,7 @@ async def update_job(
     job_id: int,
     job: JobUpdate,
     db: aiosqlite.Connection = Depends(get_db),
-    admin_user: str = Depends(verify_admin_credentials)
+    admin_user: dict = Depends(get_admin_user)
 ):
     """Update a job (requires admin authentication)"""
     # Build update query safely with explicit field mapping
@@ -401,7 +694,7 @@ async def update_job(
 async def delete_job(
     job_id: int,
     db: aiosqlite.Connection = Depends(get_db),
-    admin_user: str = Depends(verify_admin_credentials)
+    admin_user: dict = Depends(get_admin_user)
 ):
     """Delete a job (requires admin authentication, cascades to cam items and moves)"""
     await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
@@ -504,7 +797,7 @@ async def get_cam_item(cam_item_id: int, db: aiosqlite.Connection = Depends(get_
 async def create_cam_item(
     item: CamItemCreate,
     db: aiosqlite.Connection = Depends(get_db),
-    admin_user: str = Depends(verify_admin_credentials)
+    admin_user: dict = Depends(get_admin_user)
 ):
     """Create a single cam item (requires admin authentication)"""
     if item.status_station not in config.STATIONS:
@@ -554,7 +847,7 @@ async def update_cam_item(
     cam_item_id: int,
     item: CamItemUpdate,
     db: aiosqlite.Connection = Depends(get_db),
-    admin_user: str = Depends(verify_admin_credentials)
+    admin_user: dict = Depends(get_admin_user)
 ):
     """Update a CAM item (requires admin authentication - die steel info, notes, etc.)"""
     # Build update query safely with explicit field mapping
@@ -607,7 +900,7 @@ async def update_cam_item(
 async def create_cam_items_bulk(
     bulk: CamItemBulkCreate,
     db: aiosqlite.Connection = Depends(get_db),
-    admin_user: str = Depends(verify_admin_credentials)
+    admin_user: dict = Depends(get_admin_user)
 ):
     """Create multiple cam items for a job (requires admin authentication - sets x cams_per_set)"""
     if bulk.initial_station not in config.STATIONS:
@@ -682,8 +975,13 @@ async def resolve_entry_endpoint(
 
 @app.post("/api/moves")
 @limiter.limit("200/minute")
-async def move_cam(request: Request, move: MoveRequest, db: aiosqlite.Connection = Depends(get_db)):
-    """Move a cam item to a new station"""
+async def move_cam(
+    request: Request,
+    move: MoveRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Move a cam item to a new station (requires login)"""
     try:
         # Get current cam state to check from_station
         cursor = await db.execute(
@@ -708,11 +1006,14 @@ async def move_cam(request: Request, move: MoveRequest, db: aiosqlite.Connection
                     detail="Material removed must be between 0.000 and 1.000 inches"
                 )
 
+        # Use the logged-in user's display name as operator
+        operator = user["display_name"]
+
         result = await move_cam_to_station(
             db,
             cam_item_id=move.cam_item_id,
             to_station=move.to_station,
-            operator=move.operator,
+            operator=operator,
             notes=move.notes,
             auto_bump=move.auto_bump,
             material_removed=move.material_removed
@@ -722,8 +1023,12 @@ async def move_cam(request: Request, move: MoveRequest, db: aiosqlite.Connection
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/moves/undo/{cam_item_id}")
-async def undo_move(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
-    """Undo the last move for a cam item"""
+async def undo_move(
+    cam_item_id: int,
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Undo the last move for a cam item (requires login)"""
     try:
         result = await undo_last_move(db, cam_item_id)
         return result
@@ -969,7 +1274,7 @@ async def get_config():
 @app.patch("/api/config")
 async def update_config(
     config_update: ConfigUpdate,
-    admin_user: str = Depends(verify_admin_credentials)
+    admin_user: dict = Depends(get_admin_user)
 ):
     """Update configuration (requires admin authentication)"""
     if config_update.auto_bump_enabled is not None:
@@ -1102,7 +1407,7 @@ async def export_database():
 @app.post("/api/import/database")
 async def import_database(
     file: UploadFile = File(...),
-    admin_user: str = Depends(verify_admin_credentials)
+    admin_user: dict = Depends(get_admin_user)
 ):
     """
     Import/restore a SQLite database file (requires admin authentication).
@@ -1139,7 +1444,7 @@ async def import_database(
             detail="Uploaded file is empty"
         )
 
-    logger.info(f"Admin '{admin_user}' uploading database file: {file.filename} ({file_size / (1024*1024):.2f}MB)")
+    logger.info(f"Admin '{admin_user['username']}' uploading database file: {file.filename} ({file_size / (1024*1024):.2f}MB)")
 
     # Create a temporary file to validate the uploaded database
     with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
@@ -1193,7 +1498,7 @@ async def import_database(
             # Replace current database with uploaded one
             shutil.move(temp_path, config.DATABASE_PATH)
 
-            logger.info(f"Database imported successfully by admin '{admin_user}'. Jobs: {jobs_count}, CAMs: {cam_items_count}, Moves: {moves_count}")
+            logger.info(f"Database imported successfully by admin '{admin_user['username']}'. Jobs: {jobs_count}, CAMs: {cam_items_count}, Moves: {moves_count}")
 
             return {
                 "message": "Database imported successfully",
@@ -1212,7 +1517,7 @@ async def import_database(
             # Clean up temp file
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-            logger.error(f"Database import failed for admin '{admin_user}': {str(e)}")
+            logger.error(f"Database import failed for admin '{admin_user['username']}': {str(e)}")
             raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
 if __name__ == "__main__":
@@ -1220,6 +1525,7 @@ if __name__ == "__main__":
 
     # Initialize database if it doesn't exist
     init_database()
+    migrate_database()
 
     # Run server
     uvicorn.run(
