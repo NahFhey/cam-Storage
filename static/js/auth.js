@@ -4,11 +4,16 @@
 (function() {
     'use strict';
 
+    // Inactivity timeout (5 minutes)
+    var INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+    var inactivityTimer = null;
+
     // ========== Login Overlay ==========
 
     function createLoginOverlay() {
         const overlay = document.createElement('div');
         overlay.id = 'loginOverlay';
+        overlay.classList.add('hidden'); // Start hidden to prevent flash
         overlay.innerHTML = `
             <div class="login-box">
                 <h2>CAM Tracking Kiosk</h2>
@@ -172,7 +177,8 @@
             hideLoginOverlay();
             updateNavUser();
             updateAdminVisibility();
-            // Dispatch event so pages can react
+            startInactivityTimer();
+            // Dispatch event so pages can reload their data
             window.dispatchEvent(new CustomEvent('userLoggedIn', { detail: result.user }));
         } catch (error) {
             alertsDiv.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
@@ -186,13 +192,14 @@
 
     // Expose globally so apiCall can trigger it
     window.showLoginOverlay = function() {
+        stopInactivityTimer();
         const overlay = document.getElementById('loginOverlay');
         if (overlay) {
             overlay.classList.remove('hidden');
             const input = document.getElementById('loginPinInput');
             if (input) {
                 input.value = '';
-                input.focus();
+                setTimeout(function() { input.focus(); }, 100);
             }
         }
     };
@@ -200,6 +207,34 @@
     function hideLoginOverlay() {
         const overlay = document.getElementById('loginOverlay');
         if (overlay) overlay.classList.add('hidden');
+    }
+
+    // ========== Inactivity Auto-Logout ==========
+
+    function resetInactivityTimer() {
+        if (!isLoggedIn()) return;
+        clearTimeout(inactivityTimer);
+        inactivityTimer = setTimeout(function() {
+            console.log('Inactivity timeout - logging out');
+            authLogout().then(function() {
+                window.showLoginOverlay();
+                updateNavUser();
+                updateAdminVisibility();
+            });
+        }, INACTIVITY_TIMEOUT_MS);
+    }
+
+    function startInactivityTimer() {
+        // Listen for user activity
+        var events = ['mousedown', 'mousemove', 'keydown', 'touchstart', 'scroll', 'click'];
+        events.forEach(function(evt) {
+            document.addEventListener(evt, resetInactivityTimer, { passive: true });
+        });
+        resetInactivityTimer();
+    }
+
+    function stopInactivityTimer() {
+        clearTimeout(inactivityTimer);
     }
 
     // ========== Nav Bar Updates ==========
@@ -246,20 +281,23 @@
         createLoginOverlay();
 
         if (!isLoggedIn()) {
+            // No token — show login immediately
             window.showLoginOverlay();
             updateNavUser();
             updateAdminVisibility();
             return;
         }
 
-        // Validate the token is still good
+        // Has token — overlay stays hidden while we validate
         try {
             const me = await authGetMe();
             setCurrentUser(me);
             hideLoginOverlay();
             updateNavUser();
             updateAdminVisibility();
+            startInactivityTimer();
         } catch (e) {
+            // Token invalid
             clearAuthToken();
             window.showLoginOverlay();
             updateNavUser();

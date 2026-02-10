@@ -780,11 +780,20 @@
             showAlertInContainer('userAlerts', message, type);
         }
 
-        // Initialize
-        loadConfig();
-        loadJobsForBulk();
-        loadJobsForEdit();
-        loadUsers();
+        // Initialize - load data if already logged in
+        function initAdminPage() {
+            loadConfig();
+            loadJobsForBulk();
+            loadJobsForEdit();
+            loadAllJobs();
+            loadUsers();
+        }
+
+        // Load immediately (works if already logged in)
+        initAdminPage();
+
+        // Re-load after login (if user had to log in first)
+        window.addEventListener('userLoggedIn', initAdminPage);
     </script>
 </body>
 </html>

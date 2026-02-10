@@ -292,6 +292,9 @@
         // Load on page load
         loadAnalytics();
 
+        // Re-load after login
+        window.addEventListener('userLoggedIn', loadAnalytics);
+
         // Auto-refresh every 60 seconds
         setInterval(loadAnalytics, 60000);
     </script>

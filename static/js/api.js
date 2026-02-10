@@ -147,7 +147,8 @@ async function deleteUser(userId) {
 
 // Jobs
 async function getJobs() {
-    return apiCall('/jobs');
+    const response = await apiCall('/jobs');
+    return response.items || response;
 }
 
 async function getJob(jobId) {

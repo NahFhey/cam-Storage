@@ -54,6 +54,11 @@
             loadJob();
         }
 
+        // Re-load after login
+        window.addEventListener('userLoggedIn', function() {
+            if (jobId) loadJob();
+        });
+
         async function loadJob() {
             loading.classList.remove('hidden');
 

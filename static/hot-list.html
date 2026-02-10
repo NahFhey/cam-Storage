@@ -115,6 +115,9 @@
         // Load on page load
         loadHotList();
 
+        // Re-load after login
+        window.addEventListener('userLoggedIn', loadHotList);
+
         // Auto-refresh every 30 seconds
         setInterval(loadHotList, 30000);
 
