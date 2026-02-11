@@ -118,18 +118,24 @@ async def resolve_entry(db, entry: str) -> Dict:
     }
     """
     parsed = parse_manual_entry(entry)
+    parsed_dict = {
+        "s_number": parsed.s_number,
+        "set_no": parsed.set_no,
+        "cam_no": parsed.cam_no,
+        "confidence": parsed.confidence
+    }
 
-    # Look up job by S-number
+    # Look up job by S-number (match with or without S prefix)
     cursor = await db.execute(
-        "SELECT * FROM jobs WHERE s_number = ?",
-        (parsed.s_number,)
+        "SELECT * FROM jobs WHERE s_number = ? OR s_number = ? OR s_number = ?",
+        (parsed.s_number, f"S{parsed.s_number}", parsed.s_number.lstrip("S"))
     )
     job = await cursor.fetchone()
 
     if not job:
         return {
             "status": "job_not_found",
-            "parsed": parsed,
+            "parsed": parsed_dict,
             "s_number": parsed.s_number
         }
 
@@ -151,13 +157,13 @@ async def resolve_entry(db, entry: str) -> Dict:
                 "status": "exact",
                 "cam_item": dict(cam_item),
                 "job": job_dict,
-                "parsed": parsed
+                "parsed": parsed_dict
             }
         else:
             return {
                 "status": "not_found",
                 "job": job_dict,
-                "parsed": parsed,
+                "parsed": parsed_dict,
                 "message": f"CAM item not found: S{parsed.s_number} Set{parsed.set_no} Cam{parsed.cam_no}"
             }
 
@@ -178,14 +184,14 @@ async def resolve_entry(db, entry: str) -> Dict:
                 "status": "multiple",
                 "candidates": [dict(c) for c in candidates],
                 "job": job_dict,
-                "parsed": parsed,
+                "parsed": parsed_dict,
                 "message": f"Multiple CAMs found in Set {parsed.set_no}"
             }
         else:
             return {
                 "status": "not_found",
                 "job": job_dict,
-                "parsed": parsed,
+                "parsed": parsed_dict,
                 "message": f"No CAMs found in Set {parsed.set_no}"
             }
 
@@ -206,14 +212,14 @@ async def resolve_entry(db, entry: str) -> Dict:
                 "status": "exact",
                 "cam_item": dict(candidates[0]),
                 "job": job_dict,
-                "parsed": parsed
+                "parsed": parsed_dict
             }
         elif len(candidates) > 1:
             return {
                 "status": "multiple",
                 "candidates": [dict(c) for c in candidates],
                 "job": job_dict,
-                "parsed": parsed,
+                "parsed": parsed_dict,
                 "message": f"Multiple sets have Cam {parsed.cam_no}"
             }
 
@@ -233,13 +239,13 @@ async def resolve_entry(db, entry: str) -> Dict:
             "status": "multiple",
             "candidates": [dict(c) for c in candidates],
             "job": job_dict,
-            "parsed": parsed,
+            "parsed": parsed_dict,
             "message": f"Multiple CAMs found for S{parsed.s_number}"
         }
     else:
         return {
             "status": "not_found",
             "job": job_dict,
-            "parsed": parsed,
+            "parsed": parsed_dict,
             "message": f"No CAMs found for S{parsed.s_number}"
         }

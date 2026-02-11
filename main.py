@@ -131,14 +131,14 @@ class JobCreate(BaseModel):
 
     @validator('s_number')
     def validate_s_number(cls, v):
-        """Ensure S-number follows expected format"""
+        """Ensure S-number follows expected format, store as digits only"""
         if not v:
             raise ValueError('S-number cannot be empty')
-        # Allow with or without 'S' prefix
-        cleaned = v.upper().replace('S', '')
+        # Strip S prefix and store just the digits
+        cleaned = v.upper().strip().lstrip('S')
         if not cleaned.isdigit():
             raise ValueError('S-number must be numeric (e.g., S1793 or 1793)')
-        return v.upper()
+        return cleaned
 
     @validator('priority_level')
     def validate_priority(cls, v):
@@ -1131,15 +1131,18 @@ async def search(
 ):
     """Search for jobs and cam items by S-number, set, cam, or keywords"""
     search_term = f"%{q}%"
+    # Also search with S prefix stripped for S-number matching
+    q_stripped = q.upper().strip().lstrip('S')
+    search_stripped = f"%{q_stripped}%"
 
-    # Search jobs
+    # Search jobs (match against both raw input and stripped S-number)
     cursor = await db.execute(
         """
         SELECT * FROM jobs
-        WHERE s_number LIKE ? OR title LIKE ?
+        WHERE s_number LIKE ? OR s_number LIKE ? OR title LIKE ?
         ORDER BY s_number
         """,
-        (search_term, search_term)
+        (search_term, search_stripped, search_term)
     )
     jobs = await cursor.fetchall()
 

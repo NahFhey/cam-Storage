@@ -68,8 +68,18 @@ async function apiCall(endpoint, options = {}) {
         }
 
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || `API error: ${response.status}`);
+            let message = `API error: ${response.status}`;
+            try {
+                const error = await response.json();
+                message = error.detail || message;
+            } catch (e) {
+                // Response wasn't JSON (e.g. plain text 500 error)
+                try {
+                    const text = await response.text();
+                    if (text) message = text;
+                } catch (e2) { /* ignore */ }
+            }
+            throw new Error(message);
         }
 
         // Handle non-JSON responses (like CSV downloads)
