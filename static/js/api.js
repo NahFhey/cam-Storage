@@ -326,8 +326,15 @@ async function importDatabase() {
     formData.append('file', file);
 
     try {
+        const headers = {};
+        const token = getAuthToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const response = await fetch(`${API_BASE}/import/database`, {
             method: 'POST',
+            headers,
             body: formData
         });
 
