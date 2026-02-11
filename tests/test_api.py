@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 
 class TestAuthentication:
-    """Tests for HTTP Basic Auth"""
+    """Tests for PIN-based auth"""
 
     def test_admin_endpoint_without_auth_fails(self, client):
         """Test that admin endpoints require authentication"""
@@ -19,9 +19,7 @@ class TestAuthentication:
 
     def test_admin_endpoint_with_invalid_auth_fails(self, client):
         """Test that invalid credentials are rejected"""
-        import base64
-        credentials = base64.b64encode(b"wrong:wrong").decode("utf-8")
-        headers = {"Authorization": f"Basic {credentials}"}
+        headers = {"Authorization": "Bearer invalid_token_here"}
 
         response = client.post("/api/jobs", json={
             "s_number": "S1234",
@@ -48,7 +46,10 @@ class TestJobsAPI:
         """Test listing jobs (public endpoint)"""
         response = client.get("/api/jobs")
         assert response.status_code == 200
-        assert isinstance(response.json(), list)
+        data = response.json()
+        assert "items" in data
+        assert isinstance(data['items'], list)
+        assert "total" in data
 
     def test_create_job(self, client, auth_headers):
         """Test creating a new job"""
@@ -59,7 +60,8 @@ class TestJobsAPI:
         }, headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
-        assert data['s_number'] == "S1234"
+        # S-number stored as digits only
+        assert data['s_number'] == "1234"
         assert data['title'] == "Test Job"
         assert data['priority_level'] == "high"
 
@@ -88,7 +90,7 @@ class TestJobsAPI:
             "title": "Test Job",
             "priority_level": "invalid_priority"
         }, headers=auth_headers)
-        assert response.status_code == 400
+        assert response.status_code == 422
 
     def test_update_job(self, client, auth_headers):
         """Test updating a job"""
@@ -152,12 +154,11 @@ class TestMovesAPI:
         }, headers=auth_headers)
         cam_id = cam_response.json()['id']
 
-        # Move CAM
+        # Move CAM (requires auth)
         response = client.post("/api/moves", json={
             "cam_item_id": cam_id,
-            "to_station": "sharpen",
-            "operator": "test_user"
-        })
+            "to_station": "sharpen"
+        }, headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
         assert data['success'] is True
@@ -182,11 +183,11 @@ class TestMovesAPI:
         }, headers=auth_headers)
         cam_id = cam_response.json()['id']
 
-        # Try to move to same station
+        # Try to move to same station (requires auth)
         response = client.post("/api/moves", json={
             "cam_item_id": cam_id,
             "to_station": "cabinet"
-        })
+        }, headers=auth_headers)
         assert response.status_code == 400
         assert "already in" in response.json()['detail']
 
@@ -208,14 +209,14 @@ class TestMovesAPI:
         }, headers=auth_headers)
         cam_id = cam_response.json()['id']
 
-        # Move CAM
+        # Move CAM (requires auth)
         client.post("/api/moves", json={
             "cam_item_id": cam_id,
             "to_station": "sharpen"
-        })
+        }, headers=auth_headers)
 
-        # Undo move
-        response = client.post(f"/api/moves/undo/{cam_id}")
+        # Undo move (requires auth)
+        response = client.post(f"/api/moves/undo/{cam_id}", headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
         assert data['success'] is True
@@ -234,12 +235,12 @@ class TestSearchAPI:
             "priority_level": "medium"
         }, headers=auth_headers)
 
-        # Search
+        # Search (S-number is stored as digits only: "3000")
         response = client.get("/api/search?q=3000")
         assert response.status_code == 200
         data = response.json()
         assert len(data['jobs']) > 0
-        assert any(job['s_number'] == "S3000" for job in data['jobs'])
+        assert any(job['s_number'] == "3000" for job in data['jobs'])
 
     def test_search_returns_empty_for_no_match(self, client):
         """Test that search returns empty results for no match"""
@@ -295,11 +296,11 @@ class TestValidation:
         }, headers=auth_headers)
         cam_id = cam_response.json()['id']
 
-        # Try to move from sharpen to cabinet without material_removed
+        # Try to move from sharpen to cabinet without material_removed (requires auth)
         response = client.post("/api/moves", json={
             "cam_item_id": cam_id,
             "to_station": "cabinet"
-        })
+        }, headers=auth_headers)
         assert response.status_code == 400
         assert "material removed must be specified" in response.json()['detail'].lower()
 
@@ -318,4 +319,4 @@ class TestValidation:
             "cam_no": 1,
             "status_station": "invalid_station"
         }, headers=auth_headers)
-        assert response.status_code == 400
+        assert response.status_code == 422

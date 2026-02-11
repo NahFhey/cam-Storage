@@ -230,20 +230,20 @@ class TestInputValidation:
         }, headers=auth_headers)
         cam_id = cam_response.json()['id']
 
-        # Invalid material_removed (> 1.0)
+        # Invalid material_removed (> 1.0) - rejected by Pydantic
         response = client.post("/api/moves", json={
             "cam_item_id": cam_id,
             "to_station": "cabinet",
             "material_removed": 1.5
-        })
+        }, headers=auth_headers)
         assert response.status_code == 422
 
-        # Invalid material_removed (< 0)
+        # Invalid material_removed (< 0) - rejected by Pydantic
         response = client.post("/api/moves", json={
             "cam_item_id": cam_id,
             "to_station": "cabinet",
             "material_removed": -0.1
-        })
+        }, headers=auth_headers)
         assert response.status_code == 422
 
     def test_bulk_create_validation(self, client, auth_headers):

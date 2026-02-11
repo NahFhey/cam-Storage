@@ -38,6 +38,12 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="CAM Tracking Kiosk API", version="1.0.0")
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize and migrate the database on startup."""
+    init_database()
+    migrate_database()
+
 # Rate limiting setup
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -952,8 +958,8 @@ async def create_cam_items_bulk(
 @app.post("/api/resolve-entry")
 @limiter.limit("200/minute")
 async def resolve_entry_endpoint(
-    req: Request,
-    request: EntryResolveRequest,
+    request: Request,
+    body: EntryResolveRequest,
     db: aiosqlite.Connection = Depends(get_db)
 ):
     """
@@ -966,7 +972,7 @@ async def resolve_entry_endpoint(
     - job: job info
     """
     try:
-        result = await resolve_entry(db, request.entry)
+        result = await resolve_entry(db, body.entry)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1300,13 +1306,13 @@ async def export_jobs_csv(db: aiosqlite.Connection = Depends(get_db)):
     writer = csv.writer(output)
 
     # Write header
-    writer.writerow(['id', 's_number', 'title', 'priority_base', 'created_at', 'notes'])
+    writer.writerow(['id', 's_number', 'title', 'priority_level', 'created_at', 'notes'])
 
     # Write data
     for job in jobs:
         writer.writerow([
             job['id'], job['s_number'], job['title'],
-            job['priority_base'], job['created_at'], job['notes']
+            job['priority_level'], job['created_at'], job['notes']
         ])
 
     output.seek(0)
