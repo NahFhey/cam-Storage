@@ -43,3 +43,9 @@ PRIORITY_LABELS = {
     "urgent": "Urgent",
     "top": "Top"
 }
+
+# User roles
+USER_ROLES = ["user", "admin"]
+
+# Session duration in hours (default: 8-hour shift)
+SESSION_DURATION_HOURS = int(os.getenv("SESSION_DURATION_HOURS", "8"))

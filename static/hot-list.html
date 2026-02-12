@@ -36,6 +36,7 @@
     </div>
 
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/auth.js"></script>
     <script>
         const hotListContent = document.getElementById('hotListContent');
         const loading = document.getElementById('loading');
@@ -113,6 +114,9 @@
 
         // Load on page load
         loadHotList();
+
+        // Re-load after login
+        window.addEventListener('userLoggedIn', loadHotList);
 
         // Auto-refresh every 30 seconds
         setInterval(loadHotList, 30000);

@@ -164,6 +164,7 @@
     </style>
 
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/auth.js"></script>
     <script>
         let currentCamItem = null;
         let currentJob = null;
@@ -356,28 +357,45 @@
         const materialConfirmBtn = document.getElementById('materialConfirmBtn');
         const materialCancelBtn = document.getElementById('materialCancelBtn');
 
-        // Auto-format material input (12 -> 0.012)
-        materialInput.addEventListener('input', (e) => {
-            let value = e.target.value.replace(/\D/g, ''); // Remove non-digits
-            if (value.length > 4) value = value.slice(0, 4); // Max 4 digits (0-1000 thousandths)
+        // Auto-format material input as backfill (15 -> 0.015, 125 -> 0.125)
+        // Use keydown to capture digits and manage raw value via data-value attribute
+        materialInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                materialConfirmBtn.click();
+                return;
+            }
 
-            // Convert to decimal format
-            const num = parseInt(value || '0');
+            let rawDigits = materialInput.getAttribute('data-value') || '';
+
+            if (e.key === 'Backspace') {
+                e.preventDefault();
+                rawDigits = rawDigits.slice(0, -1);
+            } else if (/^[0-9]$/.test(e.key)) {
+                e.preventDefault();
+                const proposed = rawDigits + e.key;
+                // Max 4 digits (0-1000 thousandths), reject if would exceed 1.000
+                if (proposed.length <= 4 && parseInt(proposed) <= 1000) {
+                    rawDigits = proposed;
+                }
+            } else if (e.key !== 'Tab') {
+                // Allow Tab for accessibility, block everything else
+                e.preventDefault();
+                return;
+            }
+
+            const num = parseInt(rawDigits || '0');
             const formatted = (num / 1000).toFixed(3);
-
-            // Update displayed value
-            e.target.setAttribute('data-value', value);
-            e.target.value = formatted;
+            materialInput.setAttribute('data-value', rawDigits);
+            materialInput.value = formatted;
         });
 
-        // Prevent non-numeric input
-        materialInput.addEventListener('keypress', (e) => {
-            if (!/[0-9]/.test(e.key) && e.key !== 'Backspace' && e.key !== 'Delete' && e.key !== 'Enter') {
-                e.preventDefault();
-            }
-            if (e.key === 'Enter') {
-                materialConfirmBtn.click();
-            }
+        // Block paste and direct input to enforce backfill entry
+        materialInput.addEventListener('input', (e) => {
+            // Restore from data-value if someone pastes or otherwise modifies directly
+            const rawDigits = materialInput.getAttribute('data-value') || '';
+            const num = parseInt(rawDigits || '0');
+            materialInput.value = (num / 1000).toFixed(3);
         });
 
         // Helper function to prompt for material removed
@@ -385,7 +403,7 @@
             return new Promise((resolve, reject) => {
                 materialModal.classList.remove('hidden');
                 materialInput.value = '0.000';
-                materialInput.setAttribute('data-value', '0');
+                materialInput.setAttribute('data-value', '');
                 materialInput.focus();
 
                 // Update modal with cam info

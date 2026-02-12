@@ -66,6 +66,7 @@
     </div>
 
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/auth.js"></script>
     <script>
         const loading = document.getElementById('loading');
         const refreshBtn = document.getElementById('refreshBtn');
@@ -290,6 +291,9 @@
 
         // Load on page load
         loadAnalytics();
+
+        // Re-load after login
+        window.addEventListener('userLoggedIn', loadAnalytics);
 
         // Auto-refresh every 60 seconds
         setInterval(loadAnalytics, 60000);

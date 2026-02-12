@@ -37,6 +37,7 @@
     </div>
 
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/auth.js"></script>
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const jobId = urlParams.get('id');
@@ -52,6 +53,11 @@
         } else {
             loadJob();
         }
+
+        // Re-load after login
+        window.addEventListener('userLoggedIn', function() {
+            if (jobId) loadJob();
+        });
 
         async function loadJob() {
             loading.classList.remove('hidden');

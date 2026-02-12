@@ -1,93 +1,602 @@
 """
 FastAPI backend for CAM Tracking Kiosk
 """
-from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from pydantic import BaseModel, Field, validator
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import aiosqlite
 import csv
 import io
 import shutil
+import logging
+import sys
+import secrets
+import os
 
 import config
-from database import get_db, get_config_value, set_config_value, init_database
+from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin
 from entry_parser import parse_manual_entry, resolve_entry
 from business_logic import move_cam_to_station, undo_last_move, generate_hot_list
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('cam_tracking.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(title="CAM Tracking Kiosk API", version="1.0.0")
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize and migrate the database on startup."""
+    init_database()
+    migrate_database()
+
+# Rate limiting setup
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ========== Session Management ==========
+
+# In-memory session store: token -> user session dict
+active_sessions: Dict[str, dict] = {}
+
+
+def create_session(user: dict) -> str:
+    """Create a new session for a user and return the token"""
+    token = secrets.token_urlsafe(32)
+    active_sessions[token] = {
+        "user_id": user["id"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "role": user["role"],
+        "expires_at": (datetime.now() + timedelta(hours=config.SESSION_DURATION_HOURS)).isoformat()
+    }
+    return token
+
+
+def get_session(token: str) -> Optional[dict]:
+    """Get a valid session by token, or None if expired/missing"""
+    session = active_sessions.get(token)
+    if not session:
+        return None
+    if datetime.fromisoformat(session["expires_at"]) <= datetime.now():
+        del active_sessions[token]
+        return None
+    return session
+
+
+def cleanup_sessions():
+    """Remove expired sessions"""
+    now = datetime.now()
+    expired = [t for t, s in active_sessions.items()
+               if datetime.fromisoformat(s["expires_at"]) <= now]
+    for t in expired:
+        del active_sessions[t]
+
+
+# ========== Auth Dependencies ==========
+
+async def get_current_user(request: Request) -> dict:
+    """Get the current authenticated user from the session token."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+    token = auth_header[7:]
+    session = get_session(token)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired or invalid"
+        )
+    return session
+
+
+async def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
+    """Require admin role."""
+    if user["role"] != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return user
+
+
+async def get_optional_user(request: Request) -> Optional[dict]:
+    """Get the current user if authenticated, None otherwise."""
+    try:
+        return await get_current_user(request)
+    except HTTPException:
+        return None
+
 # Serve static files (frontend)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Pydantic models for request/response
+# Pydantic models for request/response with validation
 class JobCreate(BaseModel):
-    s_number: str
-    title: Optional[str] = None
-    priority_level: str = "low"
-    notes: Optional[str] = None
+    s_number: str = Field(..., min_length=1, max_length=50, description="Job S-number (e.g., 'S1793')")
+    title: Optional[str] = Field(None, max_length=200, description="Job title or description")
+    priority_level: str = Field("low", description="Priority level: low, medium, high, urgent, top")
+    notes: Optional[str] = Field(None, max_length=1000, description="Additional notes")
+
+    @validator('s_number')
+    def validate_s_number(cls, v):
+        """Ensure S-number follows expected format, store as digits only"""
+        if not v:
+            raise ValueError('S-number cannot be empty')
+        # Strip S prefix and store just the digits
+        cleaned = v.upper().strip().lstrip('S')
+        if not cleaned.isdigit():
+            raise ValueError('S-number must be numeric (e.g., S1793 or 1793)')
+        return cleaned
+
+    @validator('priority_level')
+    def validate_priority(cls, v):
+        """Validate priority level"""
+        if v not in config.PRIORITY_LEVELS:
+            raise ValueError(f'Priority must be one of: {", ".join(config.PRIORITY_LEVELS)}')
+        return v
 
 class JobUpdate(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(None, max_length=200)
     priority_level: Optional[str] = None
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(None, max_length=1000)
+
+    @validator('priority_level')
+    def validate_priority(cls, v):
+        """Validate priority level"""
+        if v is not None and v not in config.PRIORITY_LEVELS:
+            raise ValueError(f'Priority must be one of: {", ".join(config.PRIORITY_LEVELS)}')
+        return v
 
 class CamItemCreate(BaseModel):
-    job_id: int
-    set_no: int
-    cam_no: int
-    die_position: Optional[str] = None
-    enter_die_steel: Optional[str] = None
-    exit_die_steel: Optional[str] = None
-    status_station: str = "cabinet"
-    notes: Optional[str] = None
-    eol_cycles_expected: Optional[int] = None
+    job_id: int = Field(..., gt=0, description="Job ID")
+    set_no: int = Field(..., gt=0, le=999, description="Set number (1-999)")
+    cam_no: int = Field(..., gt=0, le=999, description="CAM number (1-999)")
+    die_position: Optional[str] = Field(None, description="Die position: upper or lower")
+    enter_die_steel: Optional[str] = Field(None, max_length=50)
+    exit_die_steel: Optional[str] = Field(None, max_length=50)
+    status_station: str = Field("cabinet", description="Initial station")
+    notes: Optional[str] = Field(None, max_length=1000)
+    eol_cycles_expected: Optional[int] = Field(None, ge=0, description="Expected end-of-life cycles")
+
+    @validator('die_position')
+    def validate_die_position(cls, v):
+        """Validate die position"""
+        if v is not None and v not in config.DIE_POSITIONS:
+            raise ValueError(f'Die position must be one of: {", ".join(config.DIE_POSITIONS)}')
+        return v
+
+    @validator('status_station')
+    def validate_station(cls, v):
+        """Validate station"""
+        if v not in config.STATIONS:
+            raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
+        return v
 
 class CamItemUpdate(BaseModel):
     die_position: Optional[str] = None
-    enter_die_steel: Optional[str] = None
-    exit_die_steel: Optional[str] = None
-    notes: Optional[str] = None
-    eol_cycles_expected: Optional[int] = None
+    enter_die_steel: Optional[str] = Field(None, max_length=50)
+    exit_die_steel: Optional[str] = Field(None, max_length=50)
+    notes: Optional[str] = Field(None, max_length=1000)
+    eol_cycles_expected: Optional[int] = Field(None, ge=0)
+
+    @validator('die_position')
+    def validate_die_position(cls, v):
+        """Validate die position"""
+        if v is not None and v not in config.DIE_POSITIONS:
+            raise ValueError(f'Die position must be one of: {", ".join(config.DIE_POSITIONS)}')
+        return v
 
 class CamItemBulkCreate(BaseModel):
-    job_id: int
-    sets: List[int]  # e.g., [1, 2, 3]
-    cams_per_set: int  # e.g., 4
-    initial_station: str = "cabinet"
+    job_id: int = Field(..., gt=0)
+    sets: List[int] = Field(..., min_items=1, max_items=100, description="List of set numbers")
+    cams_per_set: int = Field(..., gt=0, le=100, description="Number of CAMs per set")
+    initial_station: str = Field("cabinet", description="Initial station for all items")
+
+    @validator('sets')
+    def validate_sets(cls, v):
+        """Validate set numbers are positive and unique"""
+        if not all(s > 0 for s in v):
+            raise ValueError('All set numbers must be positive')
+        if len(v) != len(set(v)):
+            raise ValueError('Set numbers must be unique')
+        return v
+
+    @validator('initial_station')
+    def validate_station(cls, v):
+        """Validate station"""
+        if v not in config.STATIONS:
+            raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
+        return v
 
 class MoveRequest(BaseModel):
-    cam_item_id: int
-    to_station: str
-    operator: Optional[str] = None
-    notes: Optional[str] = None
+    cam_item_id: int = Field(..., gt=0)
+    to_station: str = Field(..., description="Destination station")
+    operator: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = Field(None, max_length=500)
     auto_bump: Optional[bool] = None
-    material_removed: Optional[float] = None
+    material_removed: Optional[float] = Field(None, ge=0.0, le=1.0, description="Material removed in inches (0-1)")
+
+    @validator('to_station')
+    def validate_station(cls, v):
+        """Validate station"""
+        if v not in config.STATIONS:
+            raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
+        return v
 
 class EntryResolveRequest(BaseModel):
-    entry: str
+    entry: str = Field(..., min_length=1, max_length=100, description="Manual entry string")
 
 class ConfigUpdate(BaseModel):
     auto_bump_enabled: Optional[bool] = None
+
+class LoginRequest(BaseModel):
+    pin: str = Field(..., min_length=1, max_length=20, description="User PIN")
+
+class UserCreate(BaseModel):
+    username: str = Field(..., min_length=1, max_length=50, description="Unique username")
+    display_name: str = Field(..., min_length=1, max_length=100, description="Display name")
+    pin: str = Field(..., min_length=4, max_length=20, description="Login PIN (min 4 characters)")
+    role: str = Field("user", description="User role: user or admin")
+
+    @validator('role')
+    def validate_role(cls, v):
+        if v not in config.USER_ROLES:
+            raise ValueError(f'Role must be one of: {", ".join(config.USER_ROLES)}')
+        return v
+
+    @validator('username')
+    def validate_username(cls, v):
+        if not v.replace('_', '').replace('-', '').isalnum():
+            raise ValueError('Username must be alphanumeric (underscores and hyphens allowed)')
+        return v.lower()
+
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    pin: Optional[str] = Field(None, min_length=4, max_length=20)
+    role: Optional[str] = None
+    active: Optional[bool] = None
+
+    @validator('role')
+    def validate_role(cls, v):
+        if v is not None and v not in config.USER_ROLES:
+            raise ValueError(f'Role must be one of: {", ".join(config.USER_ROLES)}')
+        return v
 
 # Root endpoint - serve main page
 @app.get("/")
 async def root():
     return FileResponse("static/index.html")
 
+# Health check endpoint
+@app.get("/health")
+async def health_check(db: aiosqlite.Connection = Depends(get_db)):
+    """
+    Health check endpoint for monitoring.
+
+    Returns service status and database connectivity.
+    """
+    try:
+        # Test database connection
+        await db.execute("SELECT 1")
+
+        # Check disk space
+        import shutil
+        stats = shutil.disk_usage(os.path.dirname(config.DATABASE_PATH))
+        free_gb = stats.free / (1024**3)
+        total_gb = stats.total / (1024**3)
+
+        # Get database stats
+        cursor = await db.execute("SELECT COUNT(*) as count FROM jobs")
+        jobs_count = (await cursor.fetchone())['count']
+
+        cursor = await db.execute("SELECT COUNT(*) as count FROM cam_items")
+        cams_count = (await cursor.fetchone())['count']
+
+        cursor = await db.execute("SELECT COUNT(*) as count FROM moves WHERE undone = 0")
+        moves_count = (await cursor.fetchone())['count']
+
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "database": {
+                "status": "connected",
+                "path": config.DATABASE_PATH,
+                "jobs_count": jobs_count,
+                "cams_count": cams_count,
+                "moves_count": moves_count
+            },
+            "disk": {
+                "free_gb": round(free_gb, 2),
+                "total_gb": round(total_gb, 2),
+                "used_percent": round((1 - free_gb / total_gb) * 100, 1)
+            },
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return Response(
+            content=f'{{"status":"unhealthy","error":"{str(e)}"}}',
+            status_code=503,
+            media_type="application/json"
+        )
+
+# ========== Auth Endpoints ==========
+
+@app.post("/api/auth/login")
+@limiter.limit("20/minute")
+async def login(request: Request, login_req: LoginRequest, db: aiosqlite.Connection = Depends(get_db)):
+    """Log in by PIN only. The system matches the PIN to a user."""
+    cleanup_sessions()
+
+    cursor = await db.execute(
+        "SELECT id, username, display_name, pin_hash, role FROM users WHERE active = 1"
+    )
+    users = await cursor.fetchall()
+
+    for user in users:
+        if verify_pin(login_req.pin, user["pin_hash"]):
+            user_dict = dict(user)
+            token = create_session(user_dict)
+            logger.info(f"User '{user_dict['username']}' logged in successfully")
+            return {
+                "token": token,
+                "user": {
+                    "id": user_dict["id"],
+                    "username": user_dict["username"],
+                    "display_name": user_dict["display_name"],
+                    "role": user_dict["role"]
+                }
+            }
+
+    logger.warning("Failed login attempt with invalid PIN")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid PIN"
+    )
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    """Log out and invalidate the session."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        if token in active_sessions:
+            session = active_sessions.pop(token)
+            logger.info(f"User '{session['username']}' logged out")
+    return {"success": True}
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    """Get the current authenticated user's info."""
+    return {
+        "user_id": user["user_id"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "role": user["role"]
+    }
+
+
+# ========== User Management Endpoints ==========
+
+@app.get("/api/users")
+async def list_users(
+    admin: dict = Depends(get_admin_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """List all users (admin only). Never returns PIN hashes."""
+    cursor = await db.execute(
+        "SELECT id, username, display_name, role, active, created_at, updated_at FROM users ORDER BY username"
+    )
+    users = await cursor.fetchall()
+    return [dict(u) for u in users]
+
+
+@app.post("/api/users")
+async def create_user(
+    user_data: UserCreate,
+    admin: dict = Depends(get_admin_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Create a new user (admin only)."""
+    # Check that the PIN isn't already used by another active user
+    cursor = await db.execute(
+        "SELECT id, pin_hash FROM users WHERE active = 1"
+    )
+    existing = await cursor.fetchall()
+    for u in existing:
+        if verify_pin(user_data.pin, u["pin_hash"]):
+            raise HTTPException(
+                status_code=400,
+                detail="This PIN is already in use by another user"
+            )
+
+    pin_hashed = hash_pin(user_data.pin)
+    try:
+        cursor = await db.execute(
+            """INSERT INTO users (username, display_name, pin_hash, role)
+               VALUES (?, ?, ?, ?)""",
+            (user_data.username, user_data.display_name, pin_hashed, user_data.role)
+        )
+        await db.commit()
+        user_id = cursor.lastrowid
+        logger.info(f"Admin '{admin['username']}' created user '{user_data.username}' (role: {user_data.role})")
+
+        return {
+            "id": user_id,
+            "username": user_data.username,
+            "display_name": user_data.display_name,
+            "role": user_data.role,
+            "active": True
+        }
+    except aiosqlite.IntegrityError:
+        raise HTTPException(status_code=400, detail=f"Username '{user_data.username}' already exists")
+
+
+@app.patch("/api/users/{user_id}")
+async def update_user(
+    user_id: int,
+    user_data: UserUpdate,
+    admin: dict = Depends(get_admin_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Update a user (admin only)."""
+    # Verify user exists
+    cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    existing_user = await cursor.fetchone()
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_parts = []
+    values = []
+
+    if user_data.display_name is not None:
+        update_parts.append("display_name = ?")
+        values.append(user_data.display_name)
+
+    if user_data.role is not None:
+        update_parts.append("role = ?")
+        values.append(user_data.role)
+
+    if user_data.active is not None:
+        update_parts.append("active = ?")
+        values.append(1 if user_data.active else 0)
+
+    if user_data.pin is not None:
+        # Check PIN uniqueness among other active users
+        cursor = await db.execute(
+            "SELECT id, pin_hash FROM users WHERE active = 1 AND id != ?", (user_id,)
+        )
+        others = await cursor.fetchall()
+        for u in others:
+            if verify_pin(user_data.pin, u["pin_hash"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail="This PIN is already in use by another user"
+                )
+        update_parts.append("pin_hash = ?")
+        values.append(hash_pin(user_data.pin))
+
+    if not update_parts:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    update_parts.append("updated_at = CURRENT_TIMESTAMP")
+    values.append(user_id)
+    query = f"UPDATE users SET {', '.join(update_parts)} WHERE id = ?"
+    await db.execute(query, values)
+    await db.commit()
+
+    # If deactivating, invalidate their sessions
+    if user_data.active is False:
+        tokens_to_remove = [
+            t for t, s in active_sessions.items() if s["user_id"] == user_id
+        ]
+        for t in tokens_to_remove:
+            del active_sessions[t]
+
+    logger.info(f"Admin '{admin['username']}' updated user id={user_id}")
+
+    cursor = await db.execute(
+        "SELECT id, username, display_name, role, active, created_at, updated_at FROM users WHERE id = ?",
+        (user_id,)
+    )
+    updated = await cursor.fetchone()
+    return dict(updated)
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    admin: dict = Depends(get_admin_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Deactivate a user (admin only). Does not delete, just sets active=0."""
+    # Prevent self-deactivation
+    if admin["user_id"] == user_id:
+        raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
+
+    cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    user = await cursor.fetchone()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await db.execute(
+        "UPDATE users SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (user_id,)
+    )
+    await db.commit()
+
+    # Invalidate their sessions
+    tokens_to_remove = [
+        t for t, s in active_sessions.items() if s["user_id"] == user_id
+    ]
+    for t in tokens_to_remove:
+        del active_sessions[t]
+
+    logger.info(f"Admin '{admin['username']}' deactivated user '{user['username']}'")
+    return {"success": True, "message": f"User '{user['username']}' deactivated"}
+
+
 # ========== Jobs Endpoints ==========
 
 @app.get("/api/jobs")
-async def list_jobs(db: aiosqlite.Connection = Depends(get_db)):
-    """List all jobs"""
+@limiter.limit("100/minute")
+async def list_jobs(
+    request: Request,
+    skip: int = 0,
+    limit: int = 100,
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """
+    List jobs with pagination.
+
+    Args:
+        skip: Number of records to skip (default: 0)
+        limit: Maximum number of records to return (default: 100, max: 500)
+
+    Returns:
+        Dictionary with items, total count, skip, and limit
+    """
+    # Enforce maximum limit
+    limit = min(limit, 500)
+
+    # Get total count
+    cursor = await db.execute("SELECT COUNT(*) as count FROM jobs")
+    total = (await cursor.fetchone())['count']
+
+    # Get paginated results
     cursor = await db.execute(
-        "SELECT * FROM jobs ORDER BY created_at DESC"
+        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (limit, skip)
     )
     jobs = await cursor.fetchall()
-    return [dict(job) for job in jobs]
+
+    return {
+        "items": [dict(job) for job in jobs],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "has_more": (skip + limit) < total
+    }
 
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
@@ -115,8 +624,14 @@ async def get_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
     }
 
 @app.post("/api/jobs")
-async def create_job(job: JobCreate, db: aiosqlite.Connection = Depends(get_db)):
-    """Create a new job"""
+@limiter.limit("50/minute")
+async def create_job(
+    request: Request,
+    job: JobCreate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Create a new job (requires admin authentication)"""
     # Validate priority level
     if job.priority_level not in config.PRIORITY_LEVELS:
         raise HTTPException(
@@ -142,13 +657,19 @@ async def create_job(job: JobCreate, db: aiosqlite.Connection = Depends(get_db))
         raise HTTPException(status_code=400, detail=f"Job {job.s_number} already exists")
 
 @app.patch("/api/jobs/{job_id}")
-async def update_job(job_id: int, job: JobUpdate, db: aiosqlite.Connection = Depends(get_db)):
-    """Update a job"""
-    updates = []
+async def update_job(
+    job_id: int,
+    job: JobUpdate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Update a job (requires admin authentication)"""
+    # Build update query safely with explicit field mapping
+    update_parts = []
     values = []
 
     if job.title is not None:
-        updates.append("title = ?")
+        update_parts.append("title = ?")
         values.append(job.title)
     if job.priority_level is not None:
         if job.priority_level not in config.PRIORITY_LEVELS:
@@ -156,20 +677,19 @@ async def update_job(job_id: int, job: JobUpdate, db: aiosqlite.Connection = Dep
                 status_code=400,
                 detail=f"Invalid priority level. Must be one of: {', '.join(config.PRIORITY_LEVELS)}"
             )
-        updates.append("priority_level = ?")
+        update_parts.append("priority_level = ?")
         values.append(job.priority_level)
     if job.notes is not None:
-        updates.append("notes = ?")
+        update_parts.append("notes = ?")
         values.append(job.notes)
 
-    if not updates:
+    if not update_parts:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     values.append(job_id)
-    await db.execute(
-        f"UPDATE jobs SET {', '.join(updates)} WHERE id = ?",
-        values
-    )
+    # Safe: update_parts only contains literal strings we control
+    query = f"UPDATE jobs SET {', '.join(update_parts)} WHERE id = ?"
+    await db.execute(query, values)
     await db.commit()
 
     cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
@@ -177,8 +697,12 @@ async def update_job(job_id: int, job: JobUpdate, db: aiosqlite.Connection = Dep
     return dict(updated_job)
 
 @app.delete("/api/jobs/{job_id}")
-async def delete_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
-    """Delete a job (cascades to cam items and moves)"""
+async def delete_job(
+    job_id: int,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Delete a job (requires admin authentication, cascades to cam items and moves)"""
     await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     await db.commit()
     return {"success": True, "message": "Job deleted"}
@@ -186,28 +710,64 @@ async def delete_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
 # ========== CAM Items Endpoints ==========
 
 @app.get("/api/cam-items")
+@limiter.limit("150/minute")
 async def list_cam_items(
+    request: Request,
     job_id: Optional[int] = None,
     station: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
     db: aiosqlite.Connection = Depends(get_db)
 ):
-    """List cam items with optional filters"""
-    query = "SELECT * FROM cam_items WHERE 1=1"
+    """
+    List cam items with optional filters and pagination.
+
+    Args:
+        job_id: Filter by job ID
+        station: Filter by station
+        skip: Number of records to skip (default: 0)
+        limit: Maximum number of records to return (default: 100, max: 500)
+    """
+    # Enforce maximum limit
+    limit = min(limit, 500)
+
+    # Build query
+    where_clauses = ["1=1"]
     params = []
 
     if job_id:
-        query += " AND job_id = ?"
+        where_clauses.append("job_id = ?")
         params.append(job_id)
 
     if station:
-        query += " AND status_station = ?"
+        if station not in config.STATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid station. Must be one of: {', '.join(config.STATIONS)}"
+            )
+        where_clauses.append("status_station = ?")
         params.append(station)
 
-    query += " ORDER BY status_updated_at DESC"
+    where_sql = " AND ".join(where_clauses)
 
-    cursor = await db.execute(query, params)
+    # Get total count
+    count_query = f"SELECT COUNT(*) as count FROM cam_items WHERE {where_sql}"
+    cursor = await db.execute(count_query, params)
+    total = (await cursor.fetchone())['count']
+
+    # Get paginated results
+    query = f"SELECT * FROM cam_items WHERE {where_sql} ORDER BY status_updated_at DESC LIMIT ? OFFSET ?"
+    cursor = await db.execute(query, params + [limit, skip])
     items = await cursor.fetchall()
-    return [dict(item) for item in items]
+
+    return {
+        "items": [dict(item) for item in items],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "has_more": (skip + limit) < total,
+        "filters": {"job_id": job_id, "station": station}
+    }
 
 @app.get("/api/cam-items/{cam_item_id}")
 async def get_cam_item(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
@@ -240,8 +800,12 @@ async def get_cam_item(cam_item_id: int, db: aiosqlite.Connection = Depends(get_
     }
 
 @app.post("/api/cam-items")
-async def create_cam_item(item: CamItemCreate, db: aiosqlite.Connection = Depends(get_db)):
-    """Create a single cam item"""
+async def create_cam_item(
+    item: CamItemCreate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Create a single cam item (requires admin authentication)"""
     if item.status_station not in config.STATIONS:
         raise HTTPException(status_code=400, detail=f"Invalid station: {item.status_station}")
 
@@ -285,9 +849,15 @@ async def create_cam_item(item: CamItemCreate, db: aiosqlite.Connection = Depend
         )
 
 @app.patch("/api/cam-items/{cam_item_id}")
-async def update_cam_item(cam_item_id: int, item: CamItemUpdate, db: aiosqlite.Connection = Depends(get_db)):
-    """Update a CAM item (die steel info, notes, etc.)"""
-    updates = []
+async def update_cam_item(
+    cam_item_id: int,
+    item: CamItemUpdate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Update a CAM item (requires admin authentication - die steel info, notes, etc.)"""
+    # Build update query safely with explicit field mapping
+    update_parts = []
     values = []
 
     if item.die_position is not None:
@@ -296,33 +866,32 @@ async def update_cam_item(cam_item_id: int, item: CamItemUpdate, db: aiosqlite.C
                 status_code=400,
                 detail=f"Invalid die position. Must be one of: {', '.join(config.DIE_POSITIONS)}"
             )
-        updates.append("die_position = ?")
+        update_parts.append("die_position = ?")
         values.append(item.die_position)
 
     if item.enter_die_steel is not None:
-        updates.append("enter_die_steel = ?")
+        update_parts.append("enter_die_steel = ?")
         values.append(item.enter_die_steel)
 
     if item.exit_die_steel is not None:
-        updates.append("exit_die_steel = ?")
+        update_parts.append("exit_die_steel = ?")
         values.append(item.exit_die_steel)
 
     if item.notes is not None:
-        updates.append("notes = ?")
+        update_parts.append("notes = ?")
         values.append(item.notes)
 
     if item.eol_cycles_expected is not None:
-        updates.append("eol_cycles_expected = ?")
+        update_parts.append("eol_cycles_expected = ?")
         values.append(item.eol_cycles_expected)
 
-    if not updates:
+    if not update_parts:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     values.append(cam_item_id)
-    await db.execute(
-        f"UPDATE cam_items SET {', '.join(updates)} WHERE id = ?",
-        values
-    )
+    # Safe: update_parts only contains literal strings we control
+    query = f"UPDATE cam_items SET {', '.join(update_parts)} WHERE id = ?"
+    await db.execute(query, values)
     await db.commit()
 
     cursor = await db.execute("SELECT * FROM cam_items WHERE id = ?", (cam_item_id,))
@@ -334,8 +903,12 @@ async def update_cam_item(cam_item_id: int, item: CamItemUpdate, db: aiosqlite.C
     return dict(updated_item)
 
 @app.post("/api/cam-items/bulk")
-async def create_cam_items_bulk(bulk: CamItemBulkCreate, db: aiosqlite.Connection = Depends(get_db)):
-    """Create multiple cam items for a job (sets x cams_per_set)"""
+async def create_cam_items_bulk(
+    bulk: CamItemBulkCreate,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Create multiple cam items for a job (requires admin authentication - sets x cams_per_set)"""
     if bulk.initial_station not in config.STATIONS:
         raise HTTPException(status_code=400, detail=f"Invalid station: {bulk.initial_station}")
 
@@ -383,8 +956,10 @@ async def create_cam_items_bulk(bulk: CamItemBulkCreate, db: aiosqlite.Connectio
 # ========== Entry Resolution Endpoint ==========
 
 @app.post("/api/resolve-entry")
+@limiter.limit("200/minute")
 async def resolve_entry_endpoint(
-    request: EntryResolveRequest,
+    request: Request,
+    body: EntryResolveRequest,
     db: aiosqlite.Connection = Depends(get_db)
 ):
     """
@@ -397,7 +972,7 @@ async def resolve_entry_endpoint(
     - job: job info
     """
     try:
-        result = await resolve_entry(db, request.entry)
+        result = await resolve_entry(db, body.entry)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -405,8 +980,14 @@ async def resolve_entry_endpoint(
 # ========== Move Operations Endpoints ==========
 
 @app.post("/api/moves")
-async def move_cam(move: MoveRequest, db: aiosqlite.Connection = Depends(get_db)):
-    """Move a cam item to a new station"""
+@limiter.limit("200/minute")
+async def move_cam(
+    request: Request,
+    move: MoveRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Move a cam item to a new station (requires login)"""
     try:
         # Get current cam state to check from_station
         cursor = await db.execute(
@@ -431,11 +1012,14 @@ async def move_cam(move: MoveRequest, db: aiosqlite.Connection = Depends(get_db)
                     detail="Material removed must be between 0.000 and 1.000 inches"
                 )
 
+        # Use the logged-in user's display name as operator
+        operator = user["display_name"]
+
         result = await move_cam_to_station(
             db,
             cam_item_id=move.cam_item_id,
             to_station=move.to_station,
-            operator=move.operator,
+            operator=operator,
             notes=move.notes,
             auto_bump=move.auto_bump,
             material_removed=move.material_removed
@@ -445,8 +1029,12 @@ async def move_cam(move: MoveRequest, db: aiosqlite.Connection = Depends(get_db)
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/moves/undo/{cam_item_id}")
-async def undo_move(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
-    """Undo the last move for a cam item"""
+async def undo_move(
+    cam_item_id: int,
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Undo the last move for a cam item (requires login)"""
     try:
         result = await undo_last_move(db, cam_item_id)
         return result
@@ -541,21 +1129,26 @@ async def get_hot_list(db: aiosqlite.Connection = Depends(get_db)):
 # ========== Search Endpoint ==========
 
 @app.get("/api/search")
+@limiter.limit("100/minute")
 async def search(
+    request: Request,
     q: str,
     db: aiosqlite.Connection = Depends(get_db)
 ):
     """Search for jobs and cam items by S-number, set, cam, or keywords"""
     search_term = f"%{q}%"
+    # Also search with S prefix stripped for S-number matching
+    q_stripped = q.upper().strip().lstrip('S')
+    search_stripped = f"%{q_stripped}%"
 
-    # Search jobs
+    # Search jobs (match against both raw input and stripped S-number)
     cursor = await db.execute(
         """
         SELECT * FROM jobs
-        WHERE s_number LIKE ? OR title LIKE ?
+        WHERE s_number LIKE ? OR s_number LIKE ? OR title LIKE ?
         ORDER BY s_number
         """,
-        (search_term, search_term)
+        (search_term, search_stripped, search_term)
     )
     jobs = await cursor.fetchall()
 
@@ -688,8 +1281,11 @@ async def get_config():
     }
 
 @app.patch("/api/config")
-async def update_config(config_update: ConfigUpdate):
-    """Update configuration"""
+async def update_config(
+    config_update: ConfigUpdate,
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Update configuration (requires admin authentication)"""
     if config_update.auto_bump_enabled is not None:
         await set_config_value(
             'auto_bump_enabled',
@@ -710,13 +1306,13 @@ async def export_jobs_csv(db: aiosqlite.Connection = Depends(get_db)):
     writer = csv.writer(output)
 
     # Write header
-    writer.writerow(['id', 's_number', 'title', 'priority_base', 'created_at', 'notes'])
+    writer.writerow(['id', 's_number', 'title', 'priority_level', 'created_at', 'notes'])
 
     # Write data
     for job in jobs:
         writer.writerow([
             job['id'], job['s_number'], job['title'],
-            job['priority_base'], job['created_at'], job['notes']
+            job['priority_level'], job['created_at'], job['notes']
         ])
 
     output.seek(0)
@@ -818,9 +1414,12 @@ async def export_database():
     )
 
 @app.post("/api/import/database")
-async def import_database(file: UploadFile = File(...)):
+async def import_database(
+    file: UploadFile = File(...),
+    admin_user: dict = Depends(get_admin_user)
+):
     """
-    Import/restore a SQLite database file.
+    Import/restore a SQLite database file (requires admin authentication).
     WARNING: This replaces ALL current data!
     """
     import os
@@ -835,13 +1434,33 @@ async def import_database(file: UploadFile = File(...)):
             detail="Invalid file type. Must be a SQLite database file (.db, .sqlite, or .sqlite3)"
         )
 
+    # Define max file size (100MB)
+    MAX_FILE_SIZE = 100 * 1024 * 1024
+
+    # Read and validate file size
+    content = await file.read()
+    file_size = len(content)
+
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is 100MB, uploaded file is {file_size / (1024*1024):.2f}MB"
+        )
+
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty"
+        )
+
+    logger.info(f"Admin '{admin_user['username']}' uploading database file: {file.filename} ({file_size / (1024*1024):.2f}MB)")
+
     # Create a temporary file to validate the uploaded database
     with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
         temp_path = temp_file.name
 
         try:
             # Write uploaded file to temp location
-            content = await file.read()
             temp_file.write(content)
             temp_file.flush()
 
@@ -888,6 +1507,8 @@ async def import_database(file: UploadFile = File(...)):
             # Replace current database with uploaded one
             shutil.move(temp_path, config.DATABASE_PATH)
 
+            logger.info(f"Database imported successfully by admin '{admin_user['username']}'. Jobs: {jobs_count}, CAMs: {cam_items_count}, Moves: {moves_count}")
+
             return {
                 "message": "Database imported successfully",
                 "backup_created": backup_path if os.path.exists(backup_path) else None,
@@ -905,6 +1526,7 @@ async def import_database(file: UploadFile = File(...)):
             # Clean up temp file
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
+            logger.error(f"Database import failed for admin '{admin_user['username']}': {str(e)}")
             raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
 if __name__ == "__main__":
@@ -912,6 +1534,7 @@ if __name__ == "__main__":
 
     # Initialize database if it doesn't exist
     init_database()
+    migrate_database()
 
     # Run server
     uvicorn.run(
