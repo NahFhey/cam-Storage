@@ -83,7 +83,7 @@
                                         <td><strong>${job.priority_score}</strong></td>
                                         <td><strong>S${job.s_number}</strong></td>
                                         <td>${job.title || '-'}</td>
-                                        <td class="text-center">${job.available_sets}</td>
+                                        <td class="text-center">${job.available_sets}${job.has_blocked_position ? ' <span class="badge badge-refill" style="font-size:0.7rem; padding:0.2rem 0.5rem;" title="A tool position is fully blocked across all sets">BLOCKED</span>' : ''}</td>
                                         <td class="text-center">${job.active_count}</td>
                                         <td class="text-center">${job.sharpen_count}</td>
                                         <td class="text-center">${job.cabinet_count}</td>
