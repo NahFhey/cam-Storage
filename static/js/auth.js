@@ -164,7 +164,11 @@
 
         const pin = pinInput.value.trim();
         if (!pin) {
-            alertsDiv.innerHTML = '<div class="alert alert-error">Please enter your PIN</div>';
+            alertsDiv.innerHTML = '';
+            var pinAlert = document.createElement('div');
+            pinAlert.className = 'alert alert-error';
+            pinAlert.textContent = 'Please enter your PIN';
+            alertsDiv.appendChild(pinAlert);
             return;
         }
 
@@ -181,7 +185,11 @@
             // Dispatch event so pages can reload their data
             window.dispatchEvent(new CustomEvent('userLoggedIn', { detail: result.user }));
         } catch (error) {
-            alertsDiv.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            alertsDiv.innerHTML = '';
+            var errAlert = document.createElement('div');
+            errAlert.className = 'alert alert-error';
+            errAlert.textContent = error.message;
+            alertsDiv.appendChild(errAlert);
             pinInput.value = '';
             pinInput.focus();
         } finally {
@@ -252,14 +260,26 @@
 
         const userInfo = document.createElement('div');
         userInfo.className = 'nav-user-info';
-        userInfo.innerHTML = `
-            <span class="nav-user-name">${user.display_name}</span>
-            <span class="nav-user-role">${user.role}</span>
-            <button class="nav-logout-btn" id="navLogoutBtn">Logout</button>
-        `;
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'nav-user-name';
+        nameSpan.textContent = user.display_name;
+        userInfo.appendChild(nameSpan);
+
+        const roleSpan = document.createElement('span');
+        roleSpan.className = 'nav-user-role';
+        roleSpan.textContent = user.role;
+        userInfo.appendChild(roleSpan);
+
+        const logoutBtn = document.createElement('button');
+        logoutBtn.className = 'nav-logout-btn';
+        logoutBtn.id = 'navLogoutBtn';
+        logoutBtn.textContent = 'Logout';
+        userInfo.appendChild(logoutBtn);
+
         nav.appendChild(userInfo);
 
-        document.getElementById('navLogoutBtn').addEventListener('click', async () => {
+        logoutBtn.addEventListener('click', async () => {
             await authLogout();
             window.showLoginOverlay();
             updateNavUser();

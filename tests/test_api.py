@@ -275,6 +275,117 @@ class TestConfigAPI:
         assert data['auto_bump_enabled'] is True
 
 
+class TestExportAuth:
+    """Tests for export endpoint authentication"""
+
+    def test_export_jobs_csv_requires_auth(self, client):
+        """Test that CSV export requires authentication"""
+        response = client.get("/api/export/jobs/csv")
+        assert response.status_code == 401
+
+    def test_export_cam_items_csv_requires_auth(self, client):
+        """Test that CAM items CSV export requires authentication"""
+        response = client.get("/api/export/cam-items/csv")
+        assert response.status_code == 401
+
+    def test_export_moves_csv_requires_auth(self, client):
+        """Test that moves CSV export requires authentication"""
+        response = client.get("/api/export/moves/csv")
+        assert response.status_code == 401
+
+    def test_export_database_requires_admin(self, client, user_auth_headers):
+        """Test that database export requires admin role"""
+        response = client.get("/api/export/database", headers=user_auth_headers)
+        assert response.status_code == 403
+
+    def test_export_jobs_csv_with_auth_succeeds(self, client, auth_headers):
+        """Test that CSV export works with valid auth"""
+        response = client.get("/api/export/jobs/csv", headers=auth_headers)
+        assert response.status_code == 200
+        assert "text/csv" in response.headers.get("content-type", "")
+
+    def test_export_database_with_admin_succeeds(self, client, auth_headers):
+        """Test that database export works with admin auth"""
+        response = client.get("/api/export/database", headers=auth_headers)
+        assert response.status_code == 200
+
+
+class TestNonAdminAuth:
+    """Tests for non-admin user permissions"""
+
+    def test_regular_user_can_move_cam(self, client, auth_headers, user_auth_headers):
+        """Test that a regular user can move CAM items"""
+        # Create job and CAM as admin
+        job_response = client.post("/api/jobs", json={
+            "s_number": "S6000",
+            "title": "User Move Test",
+            "priority_level": "medium"
+        }, headers=auth_headers)
+        job_id = job_response.json()['id']
+
+        cam_response = client.post("/api/cam-items", json={
+            "job_id": job_id,
+            "set_no": 1,
+            "cam_no": 1,
+            "status_station": "cabinet"
+        }, headers=auth_headers)
+        cam_id = cam_response.json()['id']
+
+        # Move as regular user
+        response = client.post("/api/moves", json={
+            "cam_item_id": cam_id,
+            "to_station": "active"
+        }, headers=user_auth_headers)
+        assert response.status_code == 200
+        assert response.json()['success'] is True
+
+    def test_regular_user_cannot_create_job(self, client, user_auth_headers):
+        """Test that a regular user cannot create jobs (admin-only)"""
+        response = client.post("/api/jobs", json={
+            "s_number": "S6001",
+            "title": "Should Fail",
+            "priority_level": "low"
+        }, headers=user_auth_headers)
+        assert response.status_code == 403
+
+    def test_regular_user_cannot_delete_job(self, client, auth_headers, user_auth_headers):
+        """Test that a regular user cannot delete jobs"""
+        # Create job as admin
+        job_response = client.post("/api/jobs", json={
+            "s_number": "S6002",
+            "title": "No Delete",
+            "priority_level": "low"
+        }, headers=auth_headers)
+        job_id = job_response.json()['id']
+
+        # Try to delete as regular user
+        response = client.delete(f"/api/jobs/{job_id}", headers=user_auth_headers)
+        assert response.status_code == 403
+
+
+class TestExistenceChecks:
+    """Tests for proper 404 responses on non-existent resources"""
+
+    def test_delete_nonexistent_job_returns_404(self, client, auth_headers):
+        """Test that deleting a non-existent job returns 404"""
+        response = client.delete("/api/jobs/99999", headers=auth_headers)
+        assert response.status_code == 404
+
+    def test_update_nonexistent_job_returns_404(self, client, auth_headers):
+        """Test that updating a non-existent job returns 404"""
+        response = client.patch("/api/jobs/99999", json={
+            "title": "Does Not Exist"
+        }, headers=auth_headers)
+        assert response.status_code == 404
+
+    def test_update_nonexistent_cam_item_returns_404(self, client, auth_headers):
+        """Test that updating a non-existent CAM item returns 404"""
+        response = client.patch("/api/cam-items/99999", json={
+            "notes": "Does Not Exist"
+        }, headers=auth_headers)
+        assert response.status_code == 404
+
+
 class TestValidation:
     """Tests for input validation"""
 

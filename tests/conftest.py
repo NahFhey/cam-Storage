@@ -2,7 +2,6 @@
 Pytest configuration and shared fixtures
 """
 import pytest
-import asyncio
 import tempfile
 import os
 from fastapi.testclient import TestClient
@@ -15,14 +14,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from database import init_database, get_db
 from main import app, limiter
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an event loop for the test session"""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest.fixture
@@ -83,5 +74,27 @@ def auth_headers(client):
     """
     response = client.post("/api/auth/login", json={"pin": "1234"})
     assert response.status_code == 200, f"Login failed: {response.text}"
+    token = response.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def user_auth_headers(client, auth_headers):
+    """Authentication headers for a non-admin user.
+
+    Creates a regular user via admin, logs in as that user,
+    and returns Bearer token headers.
+    """
+    # Create a regular user via admin endpoint
+    client.post("/api/users", json={
+        "username": "testworker",
+        "display_name": "Test Worker",
+        "pin": "5678",
+        "role": "user"
+    }, headers=auth_headers)
+
+    # Log in as the regular user
+    response = client.post("/api/auth/login", json={"pin": "5678"})
+    assert response.status_code == 200, f"User login failed: {response.text}"
     token = response.json()["token"]
     return {"Authorization": f"Bearer {token}"}

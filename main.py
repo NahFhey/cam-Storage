@@ -1,10 +1,11 @@
 """
 FastAPI backend for CAM Tracking Kiosk
 """
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -35,14 +36,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(title="CAM Tracking Kiosk API", version="1.0.0")
-
-@app.on_event("startup")
-async def startup_event():
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """Initialize and migrate the database on startup."""
     init_database()
     migrate_database()
+    yield
+
+# Initialize FastAPI app
+app = FastAPI(title="CAM Tracking Kiosk API", version="1.0.0", lifespan=lifespan)
 
 # Rate limiting setup
 limiter = Limiter(key_func=get_remote_address)
@@ -135,7 +138,8 @@ class JobCreate(BaseModel):
     priority_level: str = Field("low", description="Priority level: low, medium, high, urgent, top")
     notes: Optional[str] = Field(None, max_length=1000, description="Additional notes")
 
-    @validator('s_number')
+    @field_validator('s_number')
+    @classmethod
     def validate_s_number(cls, v):
         """Ensure S-number follows expected format, store as digits only"""
         if not v:
@@ -146,7 +150,8 @@ class JobCreate(BaseModel):
             raise ValueError('S-number must be numeric (e.g., S1793 or 1793)')
         return cleaned
 
-    @validator('priority_level')
+    @field_validator('priority_level')
+    @classmethod
     def validate_priority(cls, v):
         """Validate priority level"""
         if v not in config.PRIORITY_LEVELS:
@@ -158,7 +163,8 @@ class JobUpdate(BaseModel):
     priority_level: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=1000)
 
-    @validator('priority_level')
+    @field_validator('priority_level')
+    @classmethod
     def validate_priority(cls, v):
         """Validate priority level"""
         if v is not None and v not in config.PRIORITY_LEVELS:
@@ -176,14 +182,16 @@ class CamItemCreate(BaseModel):
     notes: Optional[str] = Field(None, max_length=1000)
     eol_cycles_expected: Optional[int] = Field(None, ge=0, description="Expected end-of-life cycles")
 
-    @validator('die_position')
+    @field_validator('die_position')
+    @classmethod
     def validate_die_position(cls, v):
         """Validate die position"""
         if v is not None and v not in config.DIE_POSITIONS:
             raise ValueError(f'Die position must be one of: {", ".join(config.DIE_POSITIONS)}')
         return v
 
-    @validator('status_station')
+    @field_validator('status_station')
+    @classmethod
     def validate_station(cls, v):
         """Validate station"""
         if v not in config.STATIONS:
@@ -197,7 +205,8 @@ class CamItemUpdate(BaseModel):
     notes: Optional[str] = Field(None, max_length=1000)
     eol_cycles_expected: Optional[int] = Field(None, ge=0)
 
-    @validator('die_position')
+    @field_validator('die_position')
+    @classmethod
     def validate_die_position(cls, v):
         """Validate die position"""
         if v is not None and v not in config.DIE_POSITIONS:
@@ -206,11 +215,12 @@ class CamItemUpdate(BaseModel):
 
 class CamItemBulkCreate(BaseModel):
     job_id: int = Field(..., gt=0)
-    sets: List[int] = Field(..., min_items=1, max_items=100, description="List of set numbers")
+    sets: List[int] = Field(..., min_length=1, max_length=100, description="List of set numbers")
     cams_per_set: int = Field(..., gt=0, le=100, description="Number of CAMs per set")
     initial_station: str = Field("cabinet", description="Initial station for all items")
 
-    @validator('sets')
+    @field_validator('sets')
+    @classmethod
     def validate_sets(cls, v):
         """Validate set numbers are positive and unique"""
         if not all(s > 0 for s in v):
@@ -219,7 +229,8 @@ class CamItemBulkCreate(BaseModel):
             raise ValueError('Set numbers must be unique')
         return v
 
-    @validator('initial_station')
+    @field_validator('initial_station')
+    @classmethod
     def validate_station(cls, v):
         """Validate station"""
         if v not in config.STATIONS:
@@ -234,7 +245,8 @@ class MoveRequest(BaseModel):
     auto_bump: Optional[bool] = None
     material_removed: Optional[float] = Field(None, ge=0.0, le=1.0, description="Material removed in inches (0-1)")
 
-    @validator('to_station')
+    @field_validator('to_station')
+    @classmethod
     def validate_station(cls, v):
         """Validate station"""
         if v not in config.STATIONS:
@@ -256,13 +268,15 @@ class UserCreate(BaseModel):
     pin: str = Field(..., min_length=4, max_length=20, description="Login PIN (min 4 characters)")
     role: str = Field("user", description="User role: user or admin")
 
-    @validator('role')
+    @field_validator('role')
+    @classmethod
     def validate_role(cls, v):
         if v not in config.USER_ROLES:
             raise ValueError(f'Role must be one of: {", ".join(config.USER_ROLES)}')
         return v
 
-    @validator('username')
+    @field_validator('username')
+    @classmethod
     def validate_username(cls, v):
         if not v.replace('_', '').replace('-', '').isalnum():
             raise ValueError('Username must be alphanumeric (underscores and hyphens allowed)')
@@ -274,7 +288,8 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     active: Optional[bool] = None
 
-    @validator('role')
+    @field_validator('role')
+    @classmethod
     def validate_role(cls, v):
         if v is not None and v not in config.USER_ROLES:
             raise ValueError(f'Role must be one of: {", ".join(config.USER_ROLES)}')
@@ -294,31 +309,28 @@ async def health_check(db: aiosqlite.Connection = Depends(get_db)):
     Returns service status and database connectivity.
     """
     try:
-        # Test database connection
-        await db.execute("SELECT 1")
-
         # Check disk space
-        import shutil
         stats = shutil.disk_usage(os.path.dirname(config.DATABASE_PATH))
         free_gb = stats.free / (1024**3)
         total_gb = stats.total / (1024**3)
 
-        # Get database stats
-        cursor = await db.execute("SELECT COUNT(*) as count FROM jobs")
-        jobs_count = (await cursor.fetchone())['count']
-
-        cursor = await db.execute("SELECT COUNT(*) as count FROM cam_items")
-        cams_count = (await cursor.fetchone())['count']
-
-        cursor = await db.execute("SELECT COUNT(*) as count FROM moves WHERE undone = 0")
-        moves_count = (await cursor.fetchone())['count']
+        # Get all database stats in a single query
+        cursor = await db.execute("""
+            SELECT
+                (SELECT COUNT(*) FROM jobs) as jobs_count,
+                (SELECT COUNT(*) FROM cam_items) as cams_count,
+                (SELECT COUNT(*) FROM moves WHERE undone = 0) as moves_count
+        """)
+        row = await cursor.fetchone()
+        jobs_count = row['jobs_count']
+        cams_count = row['cams_count']
+        moves_count = row['moves_count']
 
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "database": {
                 "status": "connected",
-                "path": config.DATABASE_PATH,
                 "jobs_count": jobs_count,
                 "cams_count": cams_count,
                 "moves_count": moves_count
@@ -333,7 +345,7 @@ async def health_check(db: aiosqlite.Connection = Depends(get_db)):
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return Response(
-            content=f'{{"status":"unhealthy","error":"{str(e)}"}}',
+            content='{"status":"unhealthy"}',
             status_code=503,
             media_type="application/json"
         )
@@ -632,13 +644,6 @@ async def create_job(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Create a new job (requires admin authentication)"""
-    # Validate priority level
-    if job.priority_level not in config.PRIORITY_LEVELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid priority level. Must be one of: {', '.join(config.PRIORITY_LEVELS)}"
-        )
-
     try:
         cursor = await db.execute(
             """
@@ -664,6 +669,11 @@ async def update_job(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Update a job (requires admin authentication)"""
+    # Verify job exists
+    cursor = await db.execute("SELECT id FROM jobs WHERE id = ?", (job_id,))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Job not found")
+
     # Build update query safely with explicit field mapping
     update_parts = []
     values = []
@@ -672,11 +682,6 @@ async def update_job(
         update_parts.append("title = ?")
         values.append(job.title)
     if job.priority_level is not None:
-        if job.priority_level not in config.PRIORITY_LEVELS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid priority level. Must be one of: {', '.join(config.PRIORITY_LEVELS)}"
-            )
         update_parts.append("priority_level = ?")
         values.append(job.priority_level)
     if job.notes is not None:
@@ -703,6 +708,10 @@ async def delete_job(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Delete a job (requires admin authentication, cascades to cam items and moves)"""
+    cursor = await db.execute("SELECT id FROM jobs WHERE id = ?", (job_id,))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Job not found")
+
     await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     await db.commit()
     return {"success": True, "message": "Job deleted"}
@@ -806,15 +815,6 @@ async def create_cam_item(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Create a single cam item (requires admin authentication)"""
-    if item.status_station not in config.STATIONS:
-        raise HTTPException(status_code=400, detail=f"Invalid station: {item.status_station}")
-
-    if item.die_position and item.die_position not in config.DIE_POSITIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid die position. Must be one of: {', '.join(config.DIE_POSITIONS)}"
-        )
-
     try:
         cursor = await db.execute(
             """
@@ -856,16 +856,16 @@ async def update_cam_item(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Update a CAM item (requires admin authentication - die steel info, notes, etc.)"""
+    # Verify item exists
+    cursor = await db.execute("SELECT id FROM cam_items WHERE id = ?", (cam_item_id,))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="CAM item not found")
+
     # Build update query safely with explicit field mapping
     update_parts = []
     values = []
 
     if item.die_position is not None:
-        if item.die_position not in config.DIE_POSITIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid die position. Must be one of: {', '.join(config.DIE_POSITIONS)}"
-            )
         update_parts.append("die_position = ?")
         values.append(item.die_position)
 
@@ -896,10 +896,6 @@ async def update_cam_item(
 
     cursor = await db.execute("SELECT * FROM cam_items WHERE id = ?", (cam_item_id,))
     updated_item = await cursor.fetchone()
-
-    if not updated_item:
-        raise HTTPException(status_code=404, detail="CAM item not found")
-
     return dict(updated_item)
 
 @app.post("/api/cam-items/bulk")
@@ -912,40 +908,58 @@ async def create_cam_items_bulk(
     if bulk.initial_station not in config.STATIONS:
         raise HTTPException(status_code=400, detail=f"Invalid station: {bulk.initial_station}")
 
-    created_items = []
+    # Build all rows to insert, using INSERT OR IGNORE to skip duplicates
+    cam_rows = [
+        (bulk.job_id, set_no, cam_no, bulk.initial_station)
+        for set_no in bulk.sets
+        for cam_no in range(1, bulk.cams_per_set + 1)
+    ]
 
-    for set_no in bulk.sets:
-        for cam_no in range(1, bulk.cams_per_set + 1):
-            try:
-                cursor = await db.execute(
-                    """
-                    INSERT INTO cam_items
-                    (job_id, set_no, cam_no, status_station)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (bulk.job_id, set_no, cam_no, bulk.initial_station)
-                )
-                cam_item_id = cursor.lastrowid
+    await db.executemany(
+        """INSERT OR IGNORE INTO cam_items (job_id, set_no, cam_no, status_station)
+           VALUES (?, ?, ?, ?)""",
+        cam_rows
+    )
 
-                # Record initial move
-                await db.execute(
-                    """
-                    INSERT INTO moves (cam_item_id, from_station, to_station, operator, notes)
-                    VALUES (?, 'new', ?, ?, 'Bulk creation')
-                    """,
-                    (cam_item_id, bulk.initial_station, config.DEFAULT_OPERATOR)
-                )
+    # Fetch the IDs of all items we just created (or that already existed)
+    placeholders = ",".join(["?"] * len(bulk.sets))
+    cursor = await db.execute(
+        f"""SELECT id, set_no, cam_no FROM cam_items
+            WHERE job_id = ? AND set_no IN ({placeholders})
+            AND cam_no BETWEEN 1 AND ?
+            ORDER BY set_no, cam_no""",
+        [bulk.job_id] + list(bulk.sets) + [bulk.cams_per_set]
+    )
+    created_rows = await cursor.fetchall()
 
-                created_items.append({
-                    "id": cam_item_id,
-                    "set_no": set_no,
-                    "cam_no": cam_no
-                })
-            except aiosqlite.IntegrityError:
-                # Skip if already exists
-                pass
+    # Record initial moves for items that don't already have one
+    cam_ids = [row['id'] for row in created_rows]
+    if cam_ids:
+        id_placeholders = ",".join(["?"] * len(cam_ids))
+        cursor = await db.execute(
+            f"SELECT DISTINCT cam_item_id FROM moves WHERE cam_item_id IN ({id_placeholders})",
+            cam_ids
+        )
+        existing_moves = {row['cam_item_id'] for row in await cursor.fetchall()}
+
+        move_rows = [
+            (row['id'], bulk.initial_station, config.DEFAULT_OPERATOR)
+            for row in created_rows
+            if row['id'] not in existing_moves
+        ]
+        if move_rows:
+            await db.executemany(
+                """INSERT INTO moves (cam_item_id, from_station, to_station, operator, notes)
+                   VALUES (?, 'new', ?, ?, 'Bulk creation')""",
+                move_rows
+            )
 
     await db.commit()
+
+    created_items = [
+        {"id": row['id'], "set_no": row['set_no'], "cam_no": row['cam_no']}
+        for row in created_rows
+    ]
 
     return {
         "success": True,
@@ -1076,13 +1090,20 @@ async def list_moves(
 @app.get("/api/cam-items/{cam_item_id}/sharpen-stats")
 async def get_sharpen_stats(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
     """Get sharpening statistics for a CAM item"""
-    # Get sharpen count and material removal stats
+    # Get all sharpen stats in a single query using a window function
     cursor = await db.execute(
         """
         SELECT
             COUNT(*) as sharpen_count,
             AVG(material_removed) as avg_material_removed,
-            MAX(moved_at) as last_sharpen_date
+            MAX(moved_at) as last_sharpen_date,
+            (
+                SELECT material_removed FROM moves
+                WHERE cam_item_id = ?
+                  AND from_station = 'sharpen' AND to_station = 'cabinet'
+                  AND undone = 0 AND material_removed IS NOT NULL
+                ORDER BY moved_at DESC LIMIT 1
+            ) as last_material_removed
         FROM moves
         WHERE cam_item_id = ?
           AND from_station = 'sharpen'
@@ -1090,31 +1111,14 @@ async def get_sharpen_stats(cam_item_id: int, db: aiosqlite.Connection = Depends
           AND undone = 0
           AND material_removed IS NOT NULL
         """,
-        (cam_item_id,)
+        (cam_item_id, cam_item_id)
     )
     stats = await cursor.fetchone()
-
-    # Get last material removed
-    cursor = await db.execute(
-        """
-        SELECT material_removed
-        FROM moves
-        WHERE cam_item_id = ?
-          AND from_station = 'sharpen'
-          AND to_station = 'cabinet'
-          AND undone = 0
-          AND material_removed IS NOT NULL
-        ORDER BY moved_at DESC
-        LIMIT 1
-        """,
-        (cam_item_id,)
-    )
-    last_move = await cursor.fetchone()
 
     return {
         "sharpen_count": stats['sharpen_count'] or 0,
         "avg_material_removed": round(stats['avg_material_removed'], 3) if stats['avg_material_removed'] else None,
-        "last_material_removed": last_move['material_removed'] if last_move else None,
+        "last_material_removed": stats['last_material_removed'],
         "last_sharpen_date": stats['last_sharpen_date']
     }
 
@@ -1160,8 +1164,8 @@ async def search(
             cam_items = [result['cam_item']]
         elif result['status'] == 'multiple':
             cam_items = result['candidates']
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Entry parsing failed for search query '{q}': {e}")
 
     return {
         "query": q,
@@ -1297,116 +1301,128 @@ async def update_config(
 # ========== Export Endpoints ==========
 
 @app.get("/api/export/jobs/csv")
-async def export_jobs_csv(db: aiosqlite.Connection = Depends(get_db)):
-    """Export jobs to CSV"""
-    cursor = await db.execute("SELECT * FROM jobs ORDER BY s_number")
-    jobs = await cursor.fetchall()
+async def export_jobs_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export jobs to CSV (requires authentication)"""
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['id', 's_number', 'title', 'priority_level', 'created_at', 'notes'])
+        yield output.getvalue()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
+        cursor = await db.execute("SELECT * FROM jobs ORDER BY s_number")
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for job in rows:
+                writer.writerow([
+                    job['id'], job['s_number'], job['title'],
+                    job['priority_level'], job['created_at'], job['notes']
+                ])
+            yield output.getvalue()
 
-    # Write header
-    writer.writerow(['id', 's_number', 'title', 'priority_level', 'created_at', 'notes'])
-
-    # Write data
-    for job in jobs:
-        writer.writerow([
-            job['id'], job['s_number'], job['title'],
-            job['priority_level'], job['created_at'], job['notes']
-        ])
-
-    output.seek(0)
     return StreamingResponse(
-        iter([output.getvalue()]),
+        generate(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=jobs.csv"}
     )
 
 @app.get("/api/export/cam-items/csv")
-async def export_cam_items_csv(db: aiosqlite.Connection = Depends(get_db)):
-    """Export cam items to CSV"""
-    cursor = await db.execute(
-        """
-        SELECT
-            c.*,
-            j.s_number
-        FROM cam_items c
-        JOIN jobs j ON c.job_id = j.id
-        ORDER BY j.s_number, c.set_no, c.cam_no
-        """
-    )
-    items = await cursor.fetchall()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    # Write header
-    writer.writerow([
-        's_number', 'set_no', 'cam_no', 'status_station', 'status_updated_at',
-        'enter_die_steel', 'exit_die_steel', 'notes', 'eol_cycles_expected'
-    ])
-
-    # Write data
-    for item in items:
+async def export_cam_items_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export cam items to CSV (requires authentication)"""
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
         writer.writerow([
-            item['s_number'], item['set_no'], item['cam_no'],
-            item['status_station'], item['status_updated_at'],
-            item['enter_die_steel'], item['exit_die_steel'],
-            item['notes'], item['eol_cycles_expected']
+            's_number', 'set_no', 'cam_no', 'status_station', 'status_updated_at',
+            'enter_die_steel', 'exit_die_steel', 'notes', 'eol_cycles_expected'
         ])
+        yield output.getvalue()
 
-    output.seek(0)
+        cursor = await db.execute(
+            """
+            SELECT c.*, j.s_number
+            FROM cam_items c
+            JOIN jobs j ON c.job_id = j.id
+            ORDER BY j.s_number, c.set_no, c.cam_no
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for item in rows:
+                writer.writerow([
+                    item['s_number'], item['set_no'], item['cam_no'],
+                    item['status_station'], item['status_updated_at'],
+                    item['enter_die_steel'], item['exit_die_steel'],
+                    item['notes'], item['eol_cycles_expected']
+                ])
+            yield output.getvalue()
+
     return StreamingResponse(
-        iter([output.getvalue()]),
+        generate(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=cam_items.csv"}
     )
 
 @app.get("/api/export/moves/csv")
-async def export_moves_csv(db: aiosqlite.Connection = Depends(get_db)):
-    """Export moves to CSV"""
-    cursor = await db.execute(
-        """
-        SELECT
-            m.*,
-            j.s_number,
-            c.set_no,
-            c.cam_no
-        FROM moves m
-        JOIN cam_items c ON m.cam_item_id = c.id
-        JOIN jobs j ON c.job_id = j.id
-        ORDER BY m.moved_at DESC
-        """
-    )
-    moves = await cursor.fetchall()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    # Write header
-    writer.writerow([
-        's_number', 'set_no', 'cam_no', 'from_station', 'to_station',
-        'moved_at', 'operator', 'notes', 'undone'
-    ])
-
-    # Write data
-    for move in moves:
+async def export_moves_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export moves to CSV (requires authentication)"""
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
         writer.writerow([
-            move['s_number'], move['set_no'], move['cam_no'],
-            move['from_station'], move['to_station'],
-            move['moved_at'], move['operator'], move['notes'], move['undone']
+            's_number', 'set_no', 'cam_no', 'from_station', 'to_station',
+            'moved_at', 'operator', 'notes', 'undone'
         ])
+        yield output.getvalue()
 
-    output.seek(0)
+        cursor = await db.execute(
+            """
+            SELECT m.*, j.s_number, c.set_no, c.cam_no
+            FROM moves m
+            JOIN cam_items c ON m.cam_item_id = c.id
+            JOIN jobs j ON c.job_id = j.id
+            ORDER BY m.moved_at DESC
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for move in rows:
+                writer.writerow([
+                    move['s_number'], move['set_no'], move['cam_no'],
+                    move['from_station'], move['to_station'],
+                    move['moved_at'], move['operator'], move['notes'], move['undone']
+                ])
+            yield output.getvalue()
+
     return StreamingResponse(
-        iter([output.getvalue()]),
+        generate(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=moves.csv"}
     )
 
 @app.get("/api/export/database")
-async def export_database():
-    """Download the entire SQLite database file"""
+async def export_database(admin_user: dict = Depends(get_admin_user)):
+    """Download the entire SQLite database file (requires admin authentication)"""
     return FileResponse(
         config.DATABASE_PATH,
         media_type="application/octet-stream",
@@ -1505,7 +1521,13 @@ async def import_database(
                 shutil.copy2(config.DATABASE_PATH, backup_path)
 
             # Replace current database with uploaded one
+            # Note: existing aiosqlite connections from concurrent requests may fail
+            # after this operation. The frontend triggers a page reload to recover.
+            logger.warning(f"Admin '{admin_user['username']}' replacing database file — active connections will be invalidated")
             shutil.move(temp_path, config.DATABASE_PATH)
+
+            # Invalidate all sessions since user data may have changed
+            active_sessions.clear()
 
             logger.info(f"Database imported successfully by admin '{admin_user['username']}'. Jobs: {jobs_count}, CAMs: {cam_items_count}, Moves: {moves_count}")
 
