@@ -211,7 +211,8 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
 
 def calculate_priority(available_sets: int, refill_count: int, priority_level: str,
                        all_in_sharpen: bool = False,
-                       no_cabinet_with_active_set: bool = False) -> Tuple[int, int, str]:
+                       no_cabinet_with_active_set: bool = False,
+                       has_blocked_position: bool = False) -> Tuple[int, int, str]:
     """
     Calculate job priority score based on multiple factors.
 
@@ -222,6 +223,7 @@ def calculate_priority(available_sets: int, refill_count: int, priority_level: s
       - If no cams in cabinet AND at least one active set: +2
       - If available_sets == 1: +1
       - If available_sets == 0: +2
+      - If has_blocked_position (a cam_no has all instances in refill/sharpen): +2
       - If refill_count >= 3: +1
 
     Returns: (base_priority, priority_score, label)
@@ -245,6 +247,11 @@ def calculate_priority(available_sets: int, refill_count: int, priority_level: s
         priority_score += 2
     elif available_sets == 1:
         priority_score += 1
+
+    # Blocked position: a cam_no has no available instance across any set
+    # Job effectively can't run - same severity as available_sets == 0
+    if has_blocked_position:
+        priority_score += 2
 
     # Refill count adjustment
     if refill_count >= 3:
@@ -283,7 +290,7 @@ async def generate_hot_list(db) -> List[Dict]:
                 j.title,
                 j.priority_level,
                 COUNT(c.id) as total_count,
-                COUNT(DISTINCT CASE WHEN c.status_station != 'refill' THEN c.set_no END) as available_sets,
+                COUNT(DISTINCT CASE WHEN c.status_station NOT IN ('refill', 'sharpen') THEN c.set_no END) as available_sets,
                 COUNT(CASE WHEN c.status_station = 'active' THEN 1 END) as active_count,
                 COUNT(CASE WHEN c.status_station = 'sharpen' THEN 1 END) as sharpen_count,
                 COUNT(CASE WHEN c.status_station = 'cabinet' THEN 1 END) as cabinet_count,
@@ -299,12 +306,21 @@ async def generate_hot_list(db) -> List[Dict]:
             GROUP BY job_id, set_no
             HAVING COUNT(*) = COUNT(CASE WHEN status_station = 'active' THEN 1 END)
                AND COUNT(*) > 0
+        ),
+        blocked_positions AS (
+            SELECT DISTINCT job_id
+            FROM cam_items
+            GROUP BY job_id, cam_no
+            HAVING COUNT(*) = COUNT(CASE WHEN status_station IN ('refill', 'sharpen') THEN 1 END)
+               AND COUNT(*) > 0
         )
         SELECT
             js.*,
-            CASE WHEN cas.job_id IS NOT NULL THEN 1 ELSE 0 END as has_complete_active_set
+            CASE WHEN cas.job_id IS NOT NULL THEN 1 ELSE 0 END as has_complete_active_set,
+            CASE WHEN bp.job_id IS NOT NULL THEN 1 ELSE 0 END as has_blocked_position
         FROM job_stats js
         LEFT JOIN complete_active_sets cas ON js.id = cas.job_id
+        LEFT JOIN blocked_positions bp ON js.id = bp.job_id
         WHERE js.sharpen_count > 0
           AND NOT (js.total_count > 0 AND js.cabinet_count = js.total_count)
     """)
@@ -325,13 +341,17 @@ async def generate_hot_list(db) -> List[Dict]:
             job_dict['has_complete_active_set'] == 1
         )
 
+        # Check if any cam_no has all instances blocked (in refill/sharpen)
+        has_blocked_position = job_dict['has_blocked_position'] == 1
+
         # Calculate priority
         base_priority, priority_score, label = calculate_priority(
             available_sets=job_dict['available_sets'],
             refill_count=job_dict['refill_count'],
             priority_level=job_dict['priority_level'] or 'low',
             all_in_sharpen=all_in_sharpen,
-            no_cabinet_with_active_set=no_cabinet_with_active_set
+            no_cabinet_with_active_set=no_cabinet_with_active_set,
+            has_blocked_position=has_blocked_position
         )
 
         hot_list.append({
@@ -343,6 +363,7 @@ async def generate_hot_list(db) -> List[Dict]:
             "priority_score": priority_score,
             "priority_label": label,
             "all_in_sharpen": all_in_sharpen,
+            "has_blocked_position": has_blocked_position,
             "available_sets": job_dict['available_sets'],
             "active_count": job_dict['active_count'],
             "sharpen_count": job_dict['sharpen_count'],
