@@ -352,6 +352,6 @@ async def generate_hot_list(db) -> List[Dict]:
         })
 
     # Sort by priority_score (descending)
-    hot_list.sort(key=lambda x: -x['priority_score'])
+    hot_list.sort(key=lambda x: (-x['priority_score'], -x['base_priority']))
 
     return hot_list

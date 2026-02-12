@@ -74,7 +74,7 @@
                     <div class="grid grid-2">
                         <div>
                             <p><strong>Title:</strong> ${job.title || 'N/A'}</p>
-                            <p><strong>Base Priority:</strong> ${job.priority_base}</p>
+                            <p><strong>Base Priority:</strong> ${(job.priority_level || 'low').charAt(0).toUpperCase() + (job.priority_level || 'low').slice(1)}</p>
                             <p><strong>Created:</strong> ${formatDateTime(job.created_at)}</p>
                         </div>
                         <div>
