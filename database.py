@@ -104,6 +104,7 @@ def init_database(db_path: str = None):
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA_SQL)
     conn.commit()
     ensure_default_admin(conn)
@@ -115,6 +116,7 @@ async def get_db():
     async with aiosqlite.connect(config.DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute("PRAGMA journal_mode = WAL")
         yield db
 
 @asynccontextmanager
@@ -123,12 +125,20 @@ async def get_db_connection():
     async with aiosqlite.connect(config.DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute("PRAGMA journal_mode = WAL")
         yield db
 
-async def get_config_value(key: str, default: str = None) -> Optional[str]:
-    """Get configuration value from database"""
-    async with get_db_connection() as db:
+async def get_config_value(key: str, default: str = None, db=None) -> Optional[str]:
+    """Get configuration value from database.
+
+    If a db connection is provided, uses it directly. Otherwise opens a new connection.
+    """
+    if db is not None:
         cursor = await db.execute("SELECT value FROM config WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row['value'] if row else default
+    async with get_db_connection() as conn:
+        cursor = await conn.execute("SELECT value FROM config WHERE key = ?", (key,))
         row = await cursor.fetchone()
         return row['value'] if row else default
 

@@ -1,10 +1,11 @@
 """
 FastAPI backend for CAM Tracking Kiosk
 """
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -35,14 +36,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(title="CAM Tracking Kiosk API", version="1.0.0")
-
-@app.on_event("startup")
-async def startup_event():
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """Initialize and migrate the database on startup."""
     init_database()
     migrate_database()
+    yield
+
+# Initialize FastAPI app
+app = FastAPI(title="CAM Tracking Kiosk API", version="1.0.0", lifespan=lifespan)
 
 # Rate limiting setup
 limiter = Limiter(key_func=get_remote_address)
@@ -135,7 +138,8 @@ class JobCreate(BaseModel):
     priority_level: str = Field("low", description="Priority level: low, medium, high, urgent, top")
     notes: Optional[str] = Field(None, max_length=1000, description="Additional notes")
 
-    @validator('s_number')
+    @field_validator('s_number')
+    @classmethod
     def validate_s_number(cls, v):
         """Ensure S-number follows expected format, store as digits only"""
         if not v:
@@ -146,7 +150,8 @@ class JobCreate(BaseModel):
             raise ValueError('S-number must be numeric (e.g., S1793 or 1793)')
         return cleaned
 
-    @validator('priority_level')
+    @field_validator('priority_level')
+    @classmethod
     def validate_priority(cls, v):
         """Validate priority level"""
         if v not in config.PRIORITY_LEVELS:
@@ -158,7 +163,8 @@ class JobUpdate(BaseModel):
     priority_level: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=1000)
 
-    @validator('priority_level')
+    @field_validator('priority_level')
+    @classmethod
     def validate_priority(cls, v):
         """Validate priority level"""
         if v is not None and v not in config.PRIORITY_LEVELS:
@@ -176,14 +182,16 @@ class CamItemCreate(BaseModel):
     notes: Optional[str] = Field(None, max_length=1000)
     eol_cycles_expected: Optional[int] = Field(None, ge=0, description="Expected end-of-life cycles")
 
-    @validator('die_position')
+    @field_validator('die_position')
+    @classmethod
     def validate_die_position(cls, v):
         """Validate die position"""
         if v is not None and v not in config.DIE_POSITIONS:
             raise ValueError(f'Die position must be one of: {", ".join(config.DIE_POSITIONS)}')
         return v
 
-    @validator('status_station')
+    @field_validator('status_station')
+    @classmethod
     def validate_station(cls, v):
         """Validate station"""
         if v not in config.STATIONS:
@@ -197,7 +205,8 @@ class CamItemUpdate(BaseModel):
     notes: Optional[str] = Field(None, max_length=1000)
     eol_cycles_expected: Optional[int] = Field(None, ge=0)
 
-    @validator('die_position')
+    @field_validator('die_position')
+    @classmethod
     def validate_die_position(cls, v):
         """Validate die position"""
         if v is not None and v not in config.DIE_POSITIONS:
@@ -206,11 +215,12 @@ class CamItemUpdate(BaseModel):
 
 class CamItemBulkCreate(BaseModel):
     job_id: int = Field(..., gt=0)
-    sets: List[int] = Field(..., min_items=1, max_items=100, description="List of set numbers")
+    sets: List[int] = Field(..., min_length=1, max_length=100, description="List of set numbers")
     cams_per_set: int = Field(..., gt=0, le=100, description="Number of CAMs per set")
     initial_station: str = Field("cabinet", description="Initial station for all items")
 
-    @validator('sets')
+    @field_validator('sets')
+    @classmethod
     def validate_sets(cls, v):
         """Validate set numbers are positive and unique"""
         if not all(s > 0 for s in v):
@@ -219,7 +229,8 @@ class CamItemBulkCreate(BaseModel):
             raise ValueError('Set numbers must be unique')
         return v
 
-    @validator('initial_station')
+    @field_validator('initial_station')
+    @classmethod
     def validate_station(cls, v):
         """Validate station"""
         if v not in config.STATIONS:
@@ -234,7 +245,8 @@ class MoveRequest(BaseModel):
     auto_bump: Optional[bool] = None
     material_removed: Optional[float] = Field(None, ge=0.0, le=1.0, description="Material removed in inches (0-1)")
 
-    @validator('to_station')
+    @field_validator('to_station')
+    @classmethod
     def validate_station(cls, v):
         """Validate station"""
         if v not in config.STATIONS:
@@ -256,13 +268,15 @@ class UserCreate(BaseModel):
     pin: str = Field(..., min_length=4, max_length=20, description="Login PIN (min 4 characters)")
     role: str = Field("user", description="User role: user or admin")
 
-    @validator('role')
+    @field_validator('role')
+    @classmethod
     def validate_role(cls, v):
         if v not in config.USER_ROLES:
             raise ValueError(f'Role must be one of: {", ".join(config.USER_ROLES)}')
         return v
 
-    @validator('username')
+    @field_validator('username')
+    @classmethod
     def validate_username(cls, v):
         if not v.replace('_', '').replace('-', '').isalnum():
             raise ValueError('Username must be alphanumeric (underscores and hyphens allowed)')
@@ -274,7 +288,8 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     active: Optional[bool] = None
 
-    @validator('role')
+    @field_validator('role')
+    @classmethod
     def validate_role(cls, v):
         if v is not None and v not in config.USER_ROLES:
             raise ValueError(f'Role must be one of: {", ".join(config.USER_ROLES)}')
@@ -318,7 +333,6 @@ async def health_check(db: aiosqlite.Connection = Depends(get_db)):
             "timestamp": datetime.now().isoformat(),
             "database": {
                 "status": "connected",
-                "path": config.DATABASE_PATH,
                 "jobs_count": jobs_count,
                 "cams_count": cams_count,
                 "moves_count": moves_count
@@ -333,7 +347,7 @@ async def health_check(db: aiosqlite.Connection = Depends(get_db)):
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return Response(
-            content=f'{{"status":"unhealthy","error":"{str(e)}"}}',
+            content='{"status":"unhealthy"}',
             status_code=503,
             media_type="application/json"
         )
@@ -632,13 +646,6 @@ async def create_job(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Create a new job (requires admin authentication)"""
-    # Validate priority level
-    if job.priority_level not in config.PRIORITY_LEVELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid priority level. Must be one of: {', '.join(config.PRIORITY_LEVELS)}"
-        )
-
     try:
         cursor = await db.execute(
             """
@@ -664,6 +671,11 @@ async def update_job(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Update a job (requires admin authentication)"""
+    # Verify job exists
+    cursor = await db.execute("SELECT id FROM jobs WHERE id = ?", (job_id,))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Job not found")
+
     # Build update query safely with explicit field mapping
     update_parts = []
     values = []
@@ -672,11 +684,6 @@ async def update_job(
         update_parts.append("title = ?")
         values.append(job.title)
     if job.priority_level is not None:
-        if job.priority_level not in config.PRIORITY_LEVELS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid priority level. Must be one of: {', '.join(config.PRIORITY_LEVELS)}"
-            )
         update_parts.append("priority_level = ?")
         values.append(job.priority_level)
     if job.notes is not None:
@@ -703,6 +710,10 @@ async def delete_job(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Delete a job (requires admin authentication, cascades to cam items and moves)"""
+    cursor = await db.execute("SELECT id FROM jobs WHERE id = ?", (job_id,))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Job not found")
+
     await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     await db.commit()
     return {"success": True, "message": "Job deleted"}
@@ -806,15 +817,6 @@ async def create_cam_item(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Create a single cam item (requires admin authentication)"""
-    if item.status_station not in config.STATIONS:
-        raise HTTPException(status_code=400, detail=f"Invalid station: {item.status_station}")
-
-    if item.die_position and item.die_position not in config.DIE_POSITIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid die position. Must be one of: {', '.join(config.DIE_POSITIONS)}"
-        )
-
     try:
         cursor = await db.execute(
             """
@@ -856,16 +858,16 @@ async def update_cam_item(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Update a CAM item (requires admin authentication - die steel info, notes, etc.)"""
+    # Verify item exists
+    cursor = await db.execute("SELECT id FROM cam_items WHERE id = ?", (cam_item_id,))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="CAM item not found")
+
     # Build update query safely with explicit field mapping
     update_parts = []
     values = []
 
     if item.die_position is not None:
-        if item.die_position not in config.DIE_POSITIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid die position. Must be one of: {', '.join(config.DIE_POSITIONS)}"
-            )
         update_parts.append("die_position = ?")
         values.append(item.die_position)
 
@@ -896,10 +898,6 @@ async def update_cam_item(
 
     cursor = await db.execute("SELECT * FROM cam_items WHERE id = ?", (cam_item_id,))
     updated_item = await cursor.fetchone()
-
-    if not updated_item:
-        raise HTTPException(status_code=404, detail="CAM item not found")
-
     return dict(updated_item)
 
 @app.post("/api/cam-items/bulk")
@@ -1160,8 +1158,8 @@ async def search(
             cam_items = [result['cam_item']]
         elif result['status'] == 'multiple':
             cam_items = result['candidates']
-    except:
-        pass
+    except Exception:
+        pass  # Entry parsing failed, return only job search results
 
     return {
         "query": q,
@@ -1297,8 +1295,11 @@ async def update_config(
 # ========== Export Endpoints ==========
 
 @app.get("/api/export/jobs/csv")
-async def export_jobs_csv(db: aiosqlite.Connection = Depends(get_db)):
-    """Export jobs to CSV"""
+async def export_jobs_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export jobs to CSV (requires authentication)"""
     cursor = await db.execute("SELECT * FROM jobs ORDER BY s_number")
     jobs = await cursor.fetchall()
 
@@ -1323,8 +1324,11 @@ async def export_jobs_csv(db: aiosqlite.Connection = Depends(get_db)):
     )
 
 @app.get("/api/export/cam-items/csv")
-async def export_cam_items_csv(db: aiosqlite.Connection = Depends(get_db)):
-    """Export cam items to CSV"""
+async def export_cam_items_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export cam items to CSV (requires authentication)"""
     cursor = await db.execute(
         """
         SELECT
@@ -1363,8 +1367,11 @@ async def export_cam_items_csv(db: aiosqlite.Connection = Depends(get_db)):
     )
 
 @app.get("/api/export/moves/csv")
-async def export_moves_csv(db: aiosqlite.Connection = Depends(get_db)):
-    """Export moves to CSV"""
+async def export_moves_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export moves to CSV (requires authentication)"""
     cursor = await db.execute(
         """
         SELECT
@@ -1405,8 +1412,8 @@ async def export_moves_csv(db: aiosqlite.Connection = Depends(get_db)):
     )
 
 @app.get("/api/export/database")
-async def export_database():
-    """Download the entire SQLite database file"""
+async def export_database(admin_user: dict = Depends(get_admin_user)):
+    """Download the entire SQLite database file (requires admin authentication)"""
     return FileResponse(
         config.DATABASE_PATH,
         media_type="application/octet-stream",
@@ -1505,7 +1512,13 @@ async def import_database(
                 shutil.copy2(config.DATABASE_PATH, backup_path)
 
             # Replace current database with uploaded one
+            # Note: existing aiosqlite connections from concurrent requests may fail
+            # after this operation. The frontend triggers a page reload to recover.
+            logger.warning(f"Admin '{admin_user['username']}' replacing database file — active connections will be invalidated")
             shutil.move(temp_path, config.DATABASE_PATH)
+
+            # Invalidate all sessions since user data may have changed
+            active_sessions.clear()
 
             logger.info(f"Database imported successfully by admin '{admin_user['username']}'. Jobs: {jobs_count}, CAMs: {cam_items_count}, Moves: {moves_count}")
 

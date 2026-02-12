@@ -57,7 +57,7 @@ async def move_cam_to_station(
     # Check if auto-bump is needed
     auto_bumped = None
     if auto_bump is None:
-        auto_bump_str = await get_config_value('auto_bump_enabled', 'false')
+        auto_bump_str = await get_config_value('auto_bump_enabled', 'false', db=db)
         auto_bump = auto_bump_str.lower() == 'true'
 
     if auto_bump and to_station == 'active':
@@ -294,6 +294,22 @@ async def generate_hot_list(db) -> List[Dict]:
     """)
     jobs = await cursor.fetchall()
 
+    # Batch query: find all sets where every cam is active (single query for all jobs)
+    cursor = await db.execute("""
+        SELECT job_id, set_no,
+               COUNT(*) as set_size,
+               COUNT(CASE WHEN status_station = 'active' THEN 1 END) as active_in_set
+        FROM cam_items
+        GROUP BY job_id, set_no
+    """)
+    all_sets = await cursor.fetchall()
+
+    # Build lookup: set of job_ids that have at least one fully-active set
+    jobs_with_complete_active_set = set()
+    for row in all_sets:
+        if row['set_size'] == row['active_in_set'] and row['active_in_set'] > 0:
+            jobs_with_complete_active_set.add(row['job_id'])
+
     hot_list = []
     for job in jobs:
         job_dict = dict(job)
@@ -311,19 +327,11 @@ async def generate_hot_list(db) -> List[Dict]:
                          job_dict['sharpen_count'] == job_dict['total_count'])
 
         # Check if no cams in cabinet AND at least one complete active set
-        no_cabinet_with_active_set = False
-        if job_dict['cabinet_count'] == 0 and job_dict['active_count'] > 0:
-            # Check if there's at least one set where ALL cams are active
-            cursor = await db.execute("""
-                SELECT set_no, COUNT(*) as set_size,
-                       COUNT(CASE WHEN status_station = 'active' THEN 1 END) as active_in_set
-                FROM cam_items
-                WHERE job_id = ?
-                GROUP BY set_no
-                HAVING set_size = active_in_set AND active_in_set > 0
-            """, (job_dict['id'],))
-            active_sets = await cursor.fetchall()
-            no_cabinet_with_active_set = len(active_sets) > 0
+        no_cabinet_with_active_set = (
+            job_dict['cabinet_count'] == 0 and
+            job_dict['active_count'] > 0 and
+            job_dict['id'] in jobs_with_complete_active_set
+        )
 
         # Calculate priority
         base_priority, priority_score, label = calculate_priority(

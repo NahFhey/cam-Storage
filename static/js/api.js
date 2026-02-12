@@ -287,21 +287,34 @@ async function updateConfig(configData) {
     });
 }
 
-// Exports
-function exportJobsCSV() {
-    window.location.href = `${API_BASE}/export/jobs/csv`;
+// Exports — use fetch with auth token and trigger blob download
+async function _downloadFile(endpoint, filename) {
+    const response = await apiCall(endpoint);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 
-function exportCamItemsCSV() {
-    window.location.href = `${API_BASE}/export/cam-items/csv`;
+async function exportJobsCSV() {
+    await _downloadFile('/export/jobs/csv', 'jobs.csv');
 }
 
-function exportMovesCSV() {
-    window.location.href = `${API_BASE}/export/moves/csv`;
+async function exportCamItemsCSV() {
+    await _downloadFile('/export/cam-items/csv', 'cam_items.csv');
 }
 
-function exportDatabase() {
-    window.location.href = `${API_BASE}/export/database`;
+async function exportMovesCSV() {
+    await _downloadFile('/export/moves/csv', 'moves.csv');
+}
+
+async function exportDatabase() {
+    await _downloadFile('/export/database', 'cam_tracking_backup.db');
 }
 
 async function importDatabase() {
