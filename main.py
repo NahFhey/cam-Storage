@@ -309,24 +309,22 @@ async def health_check(db: aiosqlite.Connection = Depends(get_db)):
     Returns service status and database connectivity.
     """
     try:
-        # Test database connection
-        await db.execute("SELECT 1")
-
         # Check disk space
-        import shutil
         stats = shutil.disk_usage(os.path.dirname(config.DATABASE_PATH))
         free_gb = stats.free / (1024**3)
         total_gb = stats.total / (1024**3)
 
-        # Get database stats
-        cursor = await db.execute("SELECT COUNT(*) as count FROM jobs")
-        jobs_count = (await cursor.fetchone())['count']
-
-        cursor = await db.execute("SELECT COUNT(*) as count FROM cam_items")
-        cams_count = (await cursor.fetchone())['count']
-
-        cursor = await db.execute("SELECT COUNT(*) as count FROM moves WHERE undone = 0")
-        moves_count = (await cursor.fetchone())['count']
+        # Get all database stats in a single query
+        cursor = await db.execute("""
+            SELECT
+                (SELECT COUNT(*) FROM jobs) as jobs_count,
+                (SELECT COUNT(*) FROM cam_items) as cams_count,
+                (SELECT COUNT(*) FROM moves WHERE undone = 0) as moves_count
+        """)
+        row = await cursor.fetchone()
+        jobs_count = row['jobs_count']
+        cams_count = row['cams_count']
+        moves_count = row['moves_count']
 
         return {
             "status": "healthy",
@@ -910,40 +908,58 @@ async def create_cam_items_bulk(
     if bulk.initial_station not in config.STATIONS:
         raise HTTPException(status_code=400, detail=f"Invalid station: {bulk.initial_station}")
 
-    created_items = []
+    # Build all rows to insert, using INSERT OR IGNORE to skip duplicates
+    cam_rows = [
+        (bulk.job_id, set_no, cam_no, bulk.initial_station)
+        for set_no in bulk.sets
+        for cam_no in range(1, bulk.cams_per_set + 1)
+    ]
 
-    for set_no in bulk.sets:
-        for cam_no in range(1, bulk.cams_per_set + 1):
-            try:
-                cursor = await db.execute(
-                    """
-                    INSERT INTO cam_items
-                    (job_id, set_no, cam_no, status_station)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (bulk.job_id, set_no, cam_no, bulk.initial_station)
-                )
-                cam_item_id = cursor.lastrowid
+    await db.executemany(
+        """INSERT OR IGNORE INTO cam_items (job_id, set_no, cam_no, status_station)
+           VALUES (?, ?, ?, ?)""",
+        cam_rows
+    )
 
-                # Record initial move
-                await db.execute(
-                    """
-                    INSERT INTO moves (cam_item_id, from_station, to_station, operator, notes)
-                    VALUES (?, 'new', ?, ?, 'Bulk creation')
-                    """,
-                    (cam_item_id, bulk.initial_station, config.DEFAULT_OPERATOR)
-                )
+    # Fetch the IDs of all items we just created (or that already existed)
+    placeholders = ",".join(["?"] * len(bulk.sets))
+    cursor = await db.execute(
+        f"""SELECT id, set_no, cam_no FROM cam_items
+            WHERE job_id = ? AND set_no IN ({placeholders})
+            AND cam_no BETWEEN 1 AND ?
+            ORDER BY set_no, cam_no""",
+        [bulk.job_id] + list(bulk.sets) + [bulk.cams_per_set]
+    )
+    created_rows = await cursor.fetchall()
 
-                created_items.append({
-                    "id": cam_item_id,
-                    "set_no": set_no,
-                    "cam_no": cam_no
-                })
-            except aiosqlite.IntegrityError:
-                # Skip if already exists
-                pass
+    # Record initial moves for items that don't already have one
+    cam_ids = [row['id'] for row in created_rows]
+    if cam_ids:
+        id_placeholders = ",".join(["?"] * len(cam_ids))
+        cursor = await db.execute(
+            f"SELECT DISTINCT cam_item_id FROM moves WHERE cam_item_id IN ({id_placeholders})",
+            cam_ids
+        )
+        existing_moves = {row['cam_item_id'] for row in await cursor.fetchall()}
+
+        move_rows = [
+            (row['id'], bulk.initial_station, config.DEFAULT_OPERATOR)
+            for row in created_rows
+            if row['id'] not in existing_moves
+        ]
+        if move_rows:
+            await db.executemany(
+                """INSERT INTO moves (cam_item_id, from_station, to_station, operator, notes)
+                   VALUES (?, 'new', ?, ?, 'Bulk creation')""",
+                move_rows
+            )
 
     await db.commit()
+
+    created_items = [
+        {"id": row['id'], "set_no": row['set_no'], "cam_no": row['cam_no']}
+        for row in created_rows
+    ]
 
     return {
         "success": True,
@@ -1074,13 +1090,20 @@ async def list_moves(
 @app.get("/api/cam-items/{cam_item_id}/sharpen-stats")
 async def get_sharpen_stats(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
     """Get sharpening statistics for a CAM item"""
-    # Get sharpen count and material removal stats
+    # Get all sharpen stats in a single query using a window function
     cursor = await db.execute(
         """
         SELECT
             COUNT(*) as sharpen_count,
             AVG(material_removed) as avg_material_removed,
-            MAX(moved_at) as last_sharpen_date
+            MAX(moved_at) as last_sharpen_date,
+            (
+                SELECT material_removed FROM moves
+                WHERE cam_item_id = ?
+                  AND from_station = 'sharpen' AND to_station = 'cabinet'
+                  AND undone = 0 AND material_removed IS NOT NULL
+                ORDER BY moved_at DESC LIMIT 1
+            ) as last_material_removed
         FROM moves
         WHERE cam_item_id = ?
           AND from_station = 'sharpen'
@@ -1088,31 +1111,14 @@ async def get_sharpen_stats(cam_item_id: int, db: aiosqlite.Connection = Depends
           AND undone = 0
           AND material_removed IS NOT NULL
         """,
-        (cam_item_id,)
+        (cam_item_id, cam_item_id)
     )
     stats = await cursor.fetchone()
-
-    # Get last material removed
-    cursor = await db.execute(
-        """
-        SELECT material_removed
-        FROM moves
-        WHERE cam_item_id = ?
-          AND from_station = 'sharpen'
-          AND to_station = 'cabinet'
-          AND undone = 0
-          AND material_removed IS NOT NULL
-        ORDER BY moved_at DESC
-        LIMIT 1
-        """,
-        (cam_item_id,)
-    )
-    last_move = await cursor.fetchone()
 
     return {
         "sharpen_count": stats['sharpen_count'] or 0,
         "avg_material_removed": round(stats['avg_material_removed'], 3) if stats['avg_material_removed'] else None,
-        "last_material_removed": last_move['material_removed'] if last_move else None,
+        "last_material_removed": stats['last_material_removed'],
         "last_sharpen_date": stats['last_sharpen_date']
     }
 
@@ -1158,8 +1164,8 @@ async def search(
             cam_items = [result['cam_item']]
         elif result['status'] == 'multiple':
             cam_items = result['candidates']
-    except Exception:
-        pass  # Entry parsing failed, return only job search results
+    except Exception as e:
+        logger.debug(f"Entry parsing failed for search query '{q}': {e}")
 
     return {
         "query": q,
@@ -1300,25 +1306,28 @@ async def export_jobs_csv(
     user: dict = Depends(get_current_user)
 ):
     """Export jobs to CSV (requires authentication)"""
-    cursor = await db.execute("SELECT * FROM jobs ORDER BY s_number")
-    jobs = await cursor.fetchall()
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['id', 's_number', 'title', 'priority_level', 'created_at', 'notes'])
+        yield output.getvalue()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
+        cursor = await db.execute("SELECT * FROM jobs ORDER BY s_number")
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for job in rows:
+                writer.writerow([
+                    job['id'], job['s_number'], job['title'],
+                    job['priority_level'], job['created_at'], job['notes']
+                ])
+            yield output.getvalue()
 
-    # Write header
-    writer.writerow(['id', 's_number', 'title', 'priority_level', 'created_at', 'notes'])
-
-    # Write data
-    for job in jobs:
-        writer.writerow([
-            job['id'], job['s_number'], job['title'],
-            job['priority_level'], job['created_at'], job['notes']
-        ])
-
-    output.seek(0)
     return StreamingResponse(
-        iter([output.getvalue()]),
+        generate(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=jobs.csv"}
     )
@@ -1329,39 +1338,40 @@ async def export_cam_items_csv(
     user: dict = Depends(get_current_user)
 ):
     """Export cam items to CSV (requires authentication)"""
-    cursor = await db.execute(
-        """
-        SELECT
-            c.*,
-            j.s_number
-        FROM cam_items c
-        JOIN jobs j ON c.job_id = j.id
-        ORDER BY j.s_number, c.set_no, c.cam_no
-        """
-    )
-    items = await cursor.fetchall()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    # Write header
-    writer.writerow([
-        's_number', 'set_no', 'cam_no', 'status_station', 'status_updated_at',
-        'enter_die_steel', 'exit_die_steel', 'notes', 'eol_cycles_expected'
-    ])
-
-    # Write data
-    for item in items:
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
         writer.writerow([
-            item['s_number'], item['set_no'], item['cam_no'],
-            item['status_station'], item['status_updated_at'],
-            item['enter_die_steel'], item['exit_die_steel'],
-            item['notes'], item['eol_cycles_expected']
+            's_number', 'set_no', 'cam_no', 'status_station', 'status_updated_at',
+            'enter_die_steel', 'exit_die_steel', 'notes', 'eol_cycles_expected'
         ])
+        yield output.getvalue()
 
-    output.seek(0)
+        cursor = await db.execute(
+            """
+            SELECT c.*, j.s_number
+            FROM cam_items c
+            JOIN jobs j ON c.job_id = j.id
+            ORDER BY j.s_number, c.set_no, c.cam_no
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for item in rows:
+                writer.writerow([
+                    item['s_number'], item['set_no'], item['cam_no'],
+                    item['status_station'], item['status_updated_at'],
+                    item['enter_die_steel'], item['exit_die_steel'],
+                    item['notes'], item['eol_cycles_expected']
+                ])
+            yield output.getvalue()
+
     return StreamingResponse(
-        iter([output.getvalue()]),
+        generate(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=cam_items.csv"}
     )
@@ -1372,41 +1382,40 @@ async def export_moves_csv(
     user: dict = Depends(get_current_user)
 ):
     """Export moves to CSV (requires authentication)"""
-    cursor = await db.execute(
-        """
-        SELECT
-            m.*,
-            j.s_number,
-            c.set_no,
-            c.cam_no
-        FROM moves m
-        JOIN cam_items c ON m.cam_item_id = c.id
-        JOIN jobs j ON c.job_id = j.id
-        ORDER BY m.moved_at DESC
-        """
-    )
-    moves = await cursor.fetchall()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    # Write header
-    writer.writerow([
-        's_number', 'set_no', 'cam_no', 'from_station', 'to_station',
-        'moved_at', 'operator', 'notes', 'undone'
-    ])
-
-    # Write data
-    for move in moves:
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
         writer.writerow([
-            move['s_number'], move['set_no'], move['cam_no'],
-            move['from_station'], move['to_station'],
-            move['moved_at'], move['operator'], move['notes'], move['undone']
+            's_number', 'set_no', 'cam_no', 'from_station', 'to_station',
+            'moved_at', 'operator', 'notes', 'undone'
         ])
+        yield output.getvalue()
 
-    output.seek(0)
+        cursor = await db.execute(
+            """
+            SELECT m.*, j.s_number, c.set_no, c.cam_no
+            FROM moves m
+            JOIN cam_items c ON m.cam_item_id = c.id
+            JOIN jobs j ON c.job_id = j.id
+            ORDER BY m.moved_at DESC
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for move in rows:
+                writer.writerow([
+                    move['s_number'], move['set_no'], move['cam_no'],
+                    move['from_station'], move['to_station'],
+                    move['moved_at'], move['operator'], move['notes'], move['undone']
+                ])
+            yield output.getvalue()
+
     return StreamingResponse(
-        iter([output.getvalue()]),
+        generate(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=moves.csv"}
     )

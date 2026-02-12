@@ -115,8 +115,8 @@ async def get_db():
     """Get async database connection (for FastAPI dependency injection)"""
     async with aiosqlite.connect(config.DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
+        # foreign_keys must be set per-connection; WAL mode persists on the file
         await db.execute("PRAGMA foreign_keys = ON")
-        await db.execute("PRAGMA journal_mode = WAL")
         yield db
 
 @asynccontextmanager
@@ -125,7 +125,6 @@ async def get_db_connection():
     async with aiosqlite.connect(config.DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys = ON")
-        await db.execute("PRAGMA journal_mode = WAL")
         yield db
 
 async def get_config_value(key: str, default: str = None, db=None) -> Optional[str]:

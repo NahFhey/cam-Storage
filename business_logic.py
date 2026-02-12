@@ -274,53 +274,45 @@ async def generate_hot_list(db) -> List[Dict]:
     - available sets count
     - oldest cam update timestamp
     """
-    # Get all jobs with their cam statistics
+    # Single CTE-based query: combines job stats and complete-active-set detection
     cursor = await db.execute("""
+        WITH job_stats AS (
+            SELECT
+                j.id,
+                j.s_number,
+                j.title,
+                j.priority_level,
+                COUNT(c.id) as total_count,
+                COUNT(DISTINCT CASE WHEN c.status_station != 'refill' THEN c.set_no END) as available_sets,
+                COUNT(CASE WHEN c.status_station = 'active' THEN 1 END) as active_count,
+                COUNT(CASE WHEN c.status_station = 'sharpen' THEN 1 END) as sharpen_count,
+                COUNT(CASE WHEN c.status_station = 'cabinet' THEN 1 END) as cabinet_count,
+                COUNT(CASE WHEN c.status_station = 'refill' THEN 1 END) as refill_count,
+                MIN(c.status_updated_at) as oldest_update
+            FROM jobs j
+            LEFT JOIN cam_items c ON j.id = c.job_id
+            GROUP BY j.id
+        ),
+        complete_active_sets AS (
+            SELECT DISTINCT job_id
+            FROM cam_items
+            GROUP BY job_id, set_no
+            HAVING COUNT(*) = COUNT(CASE WHEN status_station = 'active' THEN 1 END)
+               AND COUNT(*) > 0
+        )
         SELECT
-            j.id,
-            j.s_number,
-            j.title,
-            j.priority_level,
-            COUNT(c.id) as total_count,
-            COUNT(DISTINCT CASE WHEN c.status_station != 'refill' THEN c.set_no END) as available_sets,
-            COUNT(CASE WHEN c.status_station = 'active' THEN 1 END) as active_count,
-            COUNT(CASE WHEN c.status_station = 'sharpen' THEN 1 END) as sharpen_count,
-            COUNT(CASE WHEN c.status_station = 'cabinet' THEN 1 END) as cabinet_count,
-            COUNT(CASE WHEN c.status_station = 'refill' THEN 1 END) as refill_count,
-            MIN(c.status_updated_at) as oldest_update
-        FROM jobs j
-        LEFT JOIN cam_items c ON j.id = c.job_id
-        GROUP BY j.id
+            js.*,
+            CASE WHEN cas.job_id IS NOT NULL THEN 1 ELSE 0 END as has_complete_active_set
+        FROM job_stats js
+        LEFT JOIN complete_active_sets cas ON js.id = cas.job_id
+        WHERE js.sharpen_count > 0
+          AND NOT (js.total_count > 0 AND js.cabinet_count = js.total_count)
     """)
     jobs = await cursor.fetchall()
-
-    # Batch query: find all sets where every cam is active (single query for all jobs)
-    cursor = await db.execute("""
-        SELECT job_id, set_no,
-               COUNT(*) as set_size,
-               COUNT(CASE WHEN status_station = 'active' THEN 1 END) as active_in_set
-        FROM cam_items
-        GROUP BY job_id, set_no
-    """)
-    all_sets = await cursor.fetchall()
-
-    # Build lookup: set of job_ids that have at least one fully-active set
-    jobs_with_complete_active_set = set()
-    for row in all_sets:
-        if row['set_size'] == row['active_in_set'] and row['active_in_set'] > 0:
-            jobs_with_complete_active_set.add(row['job_id'])
 
     hot_list = []
     for job in jobs:
         job_dict = dict(job)
-
-        # Skip if no cams in sharpen
-        if job_dict['sharpen_count'] == 0:
-            continue
-
-        # Skip if all cams are in cabinet (no work needed)
-        if job_dict['total_count'] > 0 and job_dict['cabinet_count'] == job_dict['total_count']:
-            continue
 
         # Check if ALL cams are in sharpen
         all_in_sharpen = (job_dict['total_count'] > 0 and
@@ -330,7 +322,7 @@ async def generate_hot_list(db) -> List[Dict]:
         no_cabinet_with_active_set = (
             job_dict['cabinet_count'] == 0 and
             job_dict['active_count'] > 0 and
-            job_dict['id'] in jobs_with_complete_active_set
+            job_dict['has_complete_active_set'] == 1
         )
 
         # Calculate priority
