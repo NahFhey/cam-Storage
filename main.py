@@ -213,28 +213,31 @@ class CamItemUpdate(BaseModel):
             raise ValueError(f'Die position must be one of: {", ".join(config.DIE_POSITIONS)}')
         return v
 
-class CamItemBulkCreate(BaseModel):
-    job_id: int = Field(..., gt=0)
-    sets: List[int] = Field(..., min_length=1, max_length=100, description="List of set numbers")
-    cams_per_set: int = Field(..., gt=0, le=100, description="Number of CAMs per set")
-    initial_station: str = Field("cabinet", description="Initial station for all items")
+class CamConfig(BaseModel):
+    cam_no: int = Field(..., gt=0, le=999, description="CAM number")
+    die_position: Optional[str] = Field(None, description="Die position: upper or lower")
+    enter_die_steel: Optional[str] = Field(None, max_length=50)
+    exit_die_steel: Optional[str] = Field(None, max_length=50)
 
-    @field_validator('sets')
+    @field_validator('die_position')
     @classmethod
-    def validate_sets(cls, v):
-        """Validate set numbers are positive and unique"""
-        if not all(s > 0 for s in v):
-            raise ValueError('All set numbers must be positive')
-        if len(v) != len(set(v)):
-            raise ValueError('Set numbers must be unique')
+    def validate_die_position(cls, v):
+        if v is not None and v not in config.DIE_POSITIONS:
+            raise ValueError(f'Die position must be one of: {", ".join(config.DIE_POSITIONS)}')
         return v
 
-    @field_validator('initial_station')
+class CamItemBulkCreate(BaseModel):
+    job_id: int = Field(..., gt=0)
+    num_sets: int = Field(..., gt=0, le=100, description="Number of sets to create (1..num_sets)")
+    cams: List[CamConfig] = Field(..., min_length=1, max_length=100, description="CAM configurations to replicate per set")
+
+    @field_validator('cams')
     @classmethod
-    def validate_station(cls, v):
-        """Validate station"""
-        if v not in config.STATIONS:
-            raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
+    def validate_cams(cls, v):
+        """Validate CAM numbers are unique"""
+        cam_nos = [c.cam_no for c in v]
+        if len(cam_nos) != len(set(cam_nos)):
+            raise ValueError('CAM numbers must be unique')
         return v
 
 class MoveRequest(BaseModel):
@@ -904,31 +907,33 @@ async def create_cam_items_bulk(
     db: aiosqlite.Connection = Depends(get_db),
     admin_user: dict = Depends(get_admin_user)
 ):
-    """Create multiple cam items for a job (requires admin authentication - sets x cams_per_set)"""
-    if bulk.initial_station not in config.STATIONS:
-        raise HTTPException(status_code=400, detail=f"Invalid station: {bulk.initial_station}")
+    """Create multiple cam items for a job (requires admin authentication - num_sets x configured CAMs)"""
+    initial_station = "cabinet"
 
     # Build all rows to insert, using INSERT OR IGNORE to skip duplicates
     cam_rows = [
-        (bulk.job_id, set_no, cam_no, bulk.initial_station)
-        for set_no in bulk.sets
-        for cam_no in range(1, bulk.cams_per_set + 1)
+        (bulk.job_id, set_no, cam.cam_no, cam.die_position, cam.enter_die_steel, cam.exit_die_steel, initial_station)
+        for set_no in range(1, bulk.num_sets + 1)
+        for cam in bulk.cams
     ]
 
     await db.executemany(
-        """INSERT OR IGNORE INTO cam_items (job_id, set_no, cam_no, status_station)
-           VALUES (?, ?, ?, ?)""",
+        """INSERT OR IGNORE INTO cam_items (job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel, status_station)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         cam_rows
     )
 
     # Fetch the IDs of all items we just created (or that already existed)
-    placeholders = ",".join(["?"] * len(bulk.sets))
+    sets_list = list(range(1, bulk.num_sets + 1))
+    cam_nos = [cam.cam_no for cam in bulk.cams]
+    set_placeholders = ",".join(["?"] * len(sets_list))
+    cam_placeholders = ",".join(["?"] * len(cam_nos))
     cursor = await db.execute(
         f"""SELECT id, set_no, cam_no FROM cam_items
-            WHERE job_id = ? AND set_no IN ({placeholders})
-            AND cam_no BETWEEN 1 AND ?
+            WHERE job_id = ? AND set_no IN ({set_placeholders})
+            AND cam_no IN ({cam_placeholders})
             ORDER BY set_no, cam_no""",
-        [bulk.job_id] + list(bulk.sets) + [bulk.cams_per_set]
+        [bulk.job_id] + sets_list + cam_nos
     )
     created_rows = await cursor.fetchall()
 
@@ -943,7 +948,7 @@ async def create_cam_items_bulk(
         existing_moves = {row['cam_item_id'] for row in await cursor.fetchall()}
 
         move_rows = [
-            (row['id'], bulk.initial_station, config.DEFAULT_OPERATOR)
+            (row['id'], initial_station, config.DEFAULT_OPERATOR)
             for row in created_rows
             if row['id'] not in existing_moves
         ]
