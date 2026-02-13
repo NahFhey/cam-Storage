@@ -291,7 +291,7 @@ def calculate_priority(available_sets: int, refill_count: int, priority_level: s
       - If no cams in cabinet AND at least one active set: +2
       - If available_sets == 1: +1
       - If available_sets == 0: +2
-      - If has_blocked_position (a cam_no has all instances in refill/sharpen): +2
+      - If has_blocked_position (a cam_no has all instances in refill/sharpen): +100
       - If refill_count >= 3: +1
 
     Returns: (base_priority, priority_score, label)
@@ -317,9 +317,9 @@ def calculate_priority(available_sets: int, refill_count: int, priority_level: s
         priority_score += 1
 
     # Blocked position: a cam_no has no available instance across any set
-    # Job effectively can't run - same severity as available_sets == 0
+    # Being blocked stops production - massive boost like all_in_sharpen
     if has_blocked_position:
-        priority_score += 2
+        priority_score += 100
 
     # Refill count adjustment
     if refill_count >= 3:
