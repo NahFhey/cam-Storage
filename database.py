@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS cam_items (
     status_updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     notes TEXT,
     eol_cycles_expected INTEGER,
+    max_material_life REAL DEFAULT 0.375,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
     UNIQUE(job_id, set_no, cam_no)
@@ -92,9 +93,27 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_active ON users(active);
 
+-- Tool lifespans table: tracks each lifespan (creation/refill to refill)
+CREATE TABLE IF NOT EXISTS tool_lifespans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cam_item_id INTEGER NOT NULL,
+    lifespan_number INTEGER NOT NULL DEFAULT 1,
+    started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at TIMESTAMP,
+    total_material_removed REAL NOT NULL DEFAULT 0.0,
+    sharpen_count INTEGER NOT NULL DEFAULT 0,
+    max_material_life REAL NOT NULL DEFAULT 0.375,
+    FOREIGN KEY (cam_item_id) REFERENCES cam_items(id) ON DELETE CASCADE,
+    UNIQUE(cam_item_id, lifespan_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_lifespans_cam_item ON tool_lifespans(cam_item_id);
+CREATE INDEX IF NOT EXISTS idx_tool_lifespans_active ON tool_lifespans(cam_item_id, ended_at);
+
 -- Insert default config values
 INSERT OR IGNORE INTO config (key, value) VALUES ('auto_bump_enabled', 'true');
 INSERT OR IGNORE INTO config (key, value) VALUES ('default_operator', 'kiosk');
+INSERT OR IGNORE INTO config (key, value) VALUES ('default_material_life', '0.375');
 """
 
 def init_database(db_path: str = None):
@@ -256,6 +275,110 @@ def migrate_database(db_path: str = None):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_active ON users(active)")
         logger.info("    Created users table")
+
+    # Check if max_material_life column exists on cam_items
+    cursor.execute("PRAGMA table_info(cam_items)")
+    columns = [col[1] for col in cursor.fetchall()]
+
+    if 'max_material_life' not in columns:
+        logger.info("  Adding max_material_life column to cam_items...")
+        cursor.execute("ALTER TABLE cam_items ADD COLUMN max_material_life REAL DEFAULT 0.375")
+        logger.info("    Added max_material_life column (defaults to 0.375)")
+
+    # Check if tool_lifespans table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_lifespans'")
+    lifespans_existed = cursor.fetchone() is not None
+
+    if not lifespans_existed:
+        logger.info("  Creating tool_lifespans table...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tool_lifespans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cam_item_id INTEGER NOT NULL,
+                lifespan_number INTEGER NOT NULL DEFAULT 1,
+                started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ended_at TIMESTAMP,
+                total_material_removed REAL NOT NULL DEFAULT 0.0,
+                sharpen_count INTEGER NOT NULL DEFAULT 0,
+                max_material_life REAL NOT NULL DEFAULT 0.375,
+                FOREIGN KEY (cam_item_id) REFERENCES cam_items(id) ON DELETE CASCADE,
+                UNIQUE(cam_item_id, lifespan_number)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tool_lifespans_cam_item ON tool_lifespans(cam_item_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tool_lifespans_active ON tool_lifespans(cam_item_id, ended_at)")
+        logger.info("    Created tool_lifespans table")
+
+    # Insert default_material_life config if missing
+    cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('default_material_life', '0.375')")
+
+    # Backfill lifespan data for existing cam_items if table was just created
+    if not lifespans_existed:
+        logger.info("  Backfilling lifespan data from existing moves...")
+        cursor.execute("SELECT id FROM cam_items")
+        cam_ids = [row[0] for row in cursor.fetchall()]
+
+        backfill_count = 0
+        for cam_id in cam_ids:
+            cursor.execute("""
+                SELECT id, from_station, to_station, moved_at, material_removed
+                FROM moves
+                WHERE cam_item_id = ? AND undone = 0
+                ORDER BY moved_at ASC, id ASC
+            """, (cam_id,))
+            moves = cursor.fetchall()
+
+            lifespan_number = 0
+            current_start = None
+            current_total = 0.0
+            current_count = 0
+
+            for move in moves:
+                m_id, from_st, to_st, moved_at, mat_removed = move
+
+                # Start new lifespan on creation or return from refill
+                if from_st == 'new' or (from_st == 'refill' and to_st != 'refill'):
+                    if current_start is not None and lifespan_number > 0:
+                        # Close previous open lifespan (shouldn't happen normally, but safety)
+                        pass
+                    lifespan_number += 1
+                    current_start = moved_at
+                    current_total = 0.0
+                    current_count = 0
+
+                # Accumulate sharpening data
+                if from_st == 'sharpen' and to_st == 'cabinet' and mat_removed is not None:
+                    current_total += mat_removed
+                    current_count += 1
+
+                # Close lifespan on refill
+                if to_st == 'refill' and current_start is not None:
+                    cursor.execute("""
+                        INSERT INTO tool_lifespans
+                        (cam_item_id, lifespan_number, started_at, ended_at,
+                         total_material_removed, sharpen_count, max_material_life)
+                        VALUES (?, ?, ?, ?, ?, ?, 0.375)
+                    """, (cam_id, lifespan_number, current_start, moved_at,
+                          current_total, current_count))
+                    backfill_count += 1
+                    current_start = None
+                    current_total = 0.0
+                    current_count = 0
+
+            # If lifespan is still open, insert as active (no ended_at)
+            if current_start is not None:
+                if lifespan_number == 0:
+                    lifespan_number = 1
+                cursor.execute("""
+                    INSERT INTO tool_lifespans
+                    (cam_item_id, lifespan_number, started_at, ended_at,
+                     total_material_removed, sharpen_count, max_material_life)
+                    VALUES (?, ?, ?, NULL, ?, ?, 0.375)
+                """, (cam_id, lifespan_number, current_start,
+                      current_total, current_count))
+                backfill_count += 1
+
+        logger.info(f"    Backfilled {backfill_count} lifespan records for {len(cam_ids)} cam items")
 
     conn.commit()
 

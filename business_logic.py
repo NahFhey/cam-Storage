@@ -133,6 +133,18 @@ async def move_cam_to_station(
     )
     move_id = cursor.lastrowid
 
+    # Lifespan tracking hooks (non-blocking: move succeeds even if lifespan tracking fails)
+    try:
+        if from_station == 'sharpen' and to_station == 'cabinet' and material_removed:
+            await update_lifespan_on_sharpen(db, cam_item_id, material_removed)
+        if to_station == 'refill':
+            await close_lifespan_on_refill(db, cam_item_id)
+        if from_station == 'refill' and to_station != 'refill':
+            await open_new_lifespan(db, cam_item_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Lifespan tracking failed for cam {cam_item_id}: {e}")
+
     await db.commit()
 
     return {
@@ -194,6 +206,62 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
         """,
         (revert_to, cam_item_id)
     )
+
+    # Reverse lifespan changes for the undone move (non-blocking)
+    try:
+        undone_from = last_move['from_station']
+        undone_to = last_move['to_station']
+        undone_material = last_move['material_removed']
+
+        # Undo sharpen->cabinet: decrement lifespan totals
+        if undone_from == 'sharpen' and undone_to == 'cabinet' and undone_material:
+            active_ls = await get_active_lifespan(db, cam_item_id)
+            if active_ls:
+                new_total = max(0, active_ls['total_material_removed'] - undone_material)
+                new_count = max(0, active_ls['sharpen_count'] - 1)
+                await db.execute(
+                    "UPDATE tool_lifespans SET total_material_removed = ?, sharpen_count = ? WHERE id = ?",
+                    (new_total, new_count, active_ls['id'])
+                )
+
+        # Undo move-to-refill: reopen the closed lifespan
+        if undone_to == 'refill':
+            await db.execute(
+                """UPDATE tool_lifespans SET ended_at = NULL
+                   WHERE cam_item_id = ? AND ended_at IS NOT NULL
+                   AND lifespan_number = (
+                       SELECT MAX(lifespan_number) FROM tool_lifespans
+                       WHERE cam_item_id = ? AND ended_at IS NOT NULL
+                   )""",
+                (cam_item_id, cam_item_id)
+            )
+
+        # Undo move-from-refill: delete the newly opened lifespan, reopen previous
+        if undone_from == 'refill' and undone_to != 'refill':
+            # Delete the lifespan that was just opened (should have 0 sharpenings)
+            await db.execute(
+                """DELETE FROM tool_lifespans
+                   WHERE cam_item_id = ? AND ended_at IS NULL
+                   AND sharpen_count = 0 AND total_material_removed = 0
+                   AND lifespan_number = (
+                       SELECT MAX(lifespan_number) FROM tool_lifespans
+                       WHERE cam_item_id = ? AND ended_at IS NULL
+                   )""",
+                (cam_item_id, cam_item_id)
+            )
+            # Reopen the previous completed lifespan
+            await db.execute(
+                """UPDATE tool_lifespans SET ended_at = NULL
+                   WHERE cam_item_id = ? AND ended_at IS NOT NULL
+                   AND lifespan_number = (
+                       SELECT MAX(lifespan_number) FROM tool_lifespans
+                       WHERE cam_item_id = ? AND ended_at IS NOT NULL
+                   )""",
+                (cam_item_id, cam_item_id)
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Lifespan undo tracking failed for cam {cam_item_id}: {e}")
 
     await db.commit()
 
@@ -376,3 +444,215 @@ async def generate_hot_list(db) -> List[Dict]:
     hot_list.sort(key=lambda x: (-x['priority_score'], -x['base_priority']))
 
     return hot_list
+
+
+# ========== Tool Lifespan Management ==========
+
+async def get_active_lifespan(db, cam_item_id: int) -> Optional[Dict]:
+    """Get the current active lifespan for a tool (ended_at IS NULL)."""
+    cursor = await db.execute(
+        """SELECT * FROM tool_lifespans
+           WHERE cam_item_id = ? AND ended_at IS NULL
+           ORDER BY lifespan_number DESC LIMIT 1""",
+        (cam_item_id,)
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def update_lifespan_on_sharpen(db, cam_item_id: int, material_removed: float):
+    """Update active lifespan when a sharpen->cabinet move occurs."""
+    lifespan = await get_active_lifespan(db, cam_item_id)
+    if lifespan:
+        await db.execute(
+            """UPDATE tool_lifespans
+               SET total_material_removed = total_material_removed + ?,
+                   sharpen_count = sharpen_count + 1
+               WHERE id = ?""",
+            (material_removed, lifespan['id'])
+        )
+    else:
+        # Edge case: no active lifespan exists. Create one.
+        cursor = await db.execute(
+            "SELECT COALESCE(MAX(lifespan_number), 0) + 1 as next_num FROM tool_lifespans WHERE cam_item_id = ?",
+            (cam_item_id,)
+        )
+        row = await cursor.fetchone()
+        next_num = row['next_num']
+
+        cursor = await db.execute(
+            "SELECT COALESCE(max_material_life, 0.375) as life FROM cam_items WHERE id = ?",
+            (cam_item_id,)
+        )
+        cam = await cursor.fetchone()
+        max_life = cam['life'] if cam else 0.375
+
+        await db.execute(
+            """INSERT INTO tool_lifespans
+               (cam_item_id, lifespan_number, total_material_removed, sharpen_count, max_material_life)
+               VALUES (?, ?, ?, 1, ?)""",
+            (cam_item_id, next_num, material_removed, max_life)
+        )
+
+
+async def close_lifespan_on_refill(db, cam_item_id: int):
+    """Close the active lifespan when a tool moves to refill."""
+    await db.execute(
+        """UPDATE tool_lifespans
+           SET ended_at = CURRENT_TIMESTAMP
+           WHERE cam_item_id = ? AND ended_at IS NULL""",
+        (cam_item_id,)
+    )
+
+
+async def open_new_lifespan(db, cam_item_id: int):
+    """Open a new lifespan when a tool returns from refill."""
+    cursor = await db.execute(
+        "SELECT COALESCE(MAX(lifespan_number), 0) + 1 as next_num FROM tool_lifespans WHERE cam_item_id = ?",
+        (cam_item_id,)
+    )
+    row = await cursor.fetchone()
+    next_num = row['next_num']
+
+    cursor = await db.execute(
+        "SELECT COALESCE(max_material_life, 0.375) as life FROM cam_items WHERE id = ?",
+        (cam_item_id,)
+    )
+    cam = await cursor.fetchone()
+    max_life = cam['life'] if cam else 0.375
+
+    await db.execute(
+        """INSERT INTO tool_lifespans
+           (cam_item_id, lifespan_number, max_material_life)
+           VALUES (?, ?, ?)""",
+        (cam_item_id, next_num, max_life)
+    )
+
+
+async def get_lifespan_forecast(db, cam_item_id: int) -> Dict:
+    """
+    Get lifespan tracking data and forecast for a CAM item.
+
+    Returns current lifespan info, forecast of sharpenings remaining,
+    and history of last 3 completed lifespans.
+    """
+    from math import floor
+
+    # Get active lifespan
+    current = await get_active_lifespan(db, cam_item_id)
+
+    # Get cam item for max_material_life default
+    cursor = await db.execute(
+        "SELECT COALESCE(max_material_life, 0.375) as life FROM cam_items WHERE id = ?",
+        (cam_item_id,)
+    )
+    cam = await cursor.fetchone()
+    default_life = cam['life'] if cam else 0.375
+
+    # Get last 3 completed lifespans
+    cursor = await db.execute(
+        """SELECT lifespan_number, total_material_removed, sharpen_count, started_at, ended_at
+           FROM tool_lifespans
+           WHERE cam_item_id = ? AND ended_at IS NOT NULL
+           ORDER BY lifespan_number DESC
+           LIMIT 3""",
+        (cam_item_id,)
+    )
+    completed = [dict(r) for r in await cursor.fetchall()]
+
+    # Count total completed lifespans
+    cursor = await db.execute(
+        "SELECT COUNT(*) as cnt FROM tool_lifespans WHERE cam_item_id = ? AND ended_at IS NOT NULL",
+        (cam_item_id,)
+    )
+    completed_count = (await cursor.fetchone())['cnt']
+
+    # Build current lifespan info
+    if current:
+        max_life = current['max_material_life']
+        total_removed = current['total_material_removed']
+        material_remaining = max(0, max_life - total_removed)
+        percent_used = round((total_removed / max_life) * 100, 1) if max_life > 0 else 0
+
+        current_info = {
+            "lifespan_number": current['lifespan_number'],
+            "total_removed": round(total_removed, 3),
+            "sharpen_count": current['sharpen_count'],
+            "material_remaining": round(material_remaining, 3),
+            "percent_life_used": percent_used,
+            "max_material_life": max_life
+        }
+    else:
+        max_life = default_life
+        current_info = {
+            "lifespan_number": 0,
+            "total_removed": 0.0,
+            "sharpen_count": 0,
+            "material_remaining": round(max_life, 3),
+            "percent_life_used": 0.0,
+            "max_material_life": max_life
+        }
+
+    # Calculate average removal per sharpen
+    avg_per_sharpen = None
+
+    # First try current lifespan
+    if current and current['sharpen_count'] > 0:
+        avg_per_sharpen = current['total_material_removed'] / current['sharpen_count']
+
+    # Blend with historical data if available
+    historical_avgs = []
+    for ls in completed:
+        if ls['sharpen_count'] > 0:
+            historical_avgs.append(ls['total_material_removed'] / ls['sharpen_count'])
+
+    if avg_per_sharpen is not None and historical_avgs:
+        # Blend current with historical
+        hist_avg = sum(historical_avgs) / len(historical_avgs)
+        avg_per_sharpen = (avg_per_sharpen * 0.6 + hist_avg * 0.4)
+    elif avg_per_sharpen is None and historical_avgs:
+        avg_per_sharpen = sum(historical_avgs) / len(historical_avgs)
+    elif avg_per_sharpen is None:
+        # No data at all — rough estimate
+        avg_per_sharpen = max_life / 25.0
+
+    # Estimate sharpenings remaining
+    material_remaining = current_info['material_remaining']
+    if avg_per_sharpen > 0:
+        est_remaining = floor(material_remaining / avg_per_sharpen)
+    else:
+        est_remaining = None
+
+    at_risk = est_remaining is not None and est_remaining <= 2
+
+    # Calculate historical averages (fill missing slots with 0.375 assumption)
+    hist_sharpen_counts = [ls['sharpen_count'] for ls in completed if ls['sharpen_count'] > 0]
+    hist_total_removed = [ls['total_material_removed'] for ls in completed if ls['sharpen_count'] > 0]
+
+    # Fill to 3 slots with defaults if fewer than 3 completed
+    while len(hist_sharpen_counts) < 3:
+        # Assume default life with the current avg per sharpen
+        if avg_per_sharpen > 0:
+            assumed_count = round(default_life / avg_per_sharpen)
+        else:
+            assumed_count = 25
+        hist_sharpen_counts.append(assumed_count)
+        hist_total_removed.append(default_life)
+
+    avg_sharpenings = round(sum(hist_sharpen_counts) / len(hist_sharpen_counts), 1)
+    avg_total = round(sum(hist_total_removed) / len(hist_total_removed), 3)
+
+    return {
+        "current_lifespan": current_info,
+        "forecast": {
+            "avg_removal_per_sharpen": round(avg_per_sharpen, 4) if avg_per_sharpen else None,
+            "estimated_sharpenings_remaining": est_remaining,
+            "at_risk": at_risk
+        },
+        "history": {
+            "completed_lifespans": completed_count,
+            "last_3": completed,
+            "avg_sharpenings_per_life": avg_sharpenings,
+            "avg_total_removed_per_life": avg_total
+        }
+    }

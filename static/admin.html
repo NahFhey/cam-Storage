@@ -31,6 +31,16 @@
                 </label>
             </div>
 
+            <div class="form-group">
+                <label class="form-label" for="defaultMaterialLife">Default Material Life (inches)</label>
+                <input type="number" id="defaultMaterialLife" class="form-input"
+                    step="0.001" min="0.001" max="2.000" value="0.375"
+                    style="max-width: 200px;">
+                <p style="margin-top: 0.25rem; color: #666; font-size: 0.85rem;">
+                    Total material removable per tool lifespan before refill. Default: 0.375". Applied to new tools.
+                </p>
+            </div>
+
             <button id="saveConfigBtn" class="btn btn-success">Save Configuration</button>
         </div>
 
@@ -210,10 +220,15 @@
         const autoBumpCheckbox = document.getElementById('autoBumpCheckbox');
         const saveConfigBtn = document.getElementById('saveConfigBtn');
 
+        const defaultMaterialLifeInput = document.getElementById('defaultMaterialLife');
+
         async function loadConfig() {
             try {
                 const config = await getConfig();
                 autoBumpCheckbox.checked = config.auto_bump_enabled;
+                if (config.default_material_life !== undefined) {
+                    defaultMaterialLifeInput.value = config.default_material_life;
+                }
             } catch (error) {
                 showConfigAlert(error.message, 'error');
             }
@@ -222,8 +237,13 @@
         saveConfigBtn.addEventListener('click', async () => {
             saveConfigBtn.disabled = true;
             try {
+                const materialLife = parseFloat(defaultMaterialLifeInput.value);
+                if (isNaN(materialLife) || materialLife < 0.001 || materialLife > 2.0) {
+                    throw new Error('Default material life must be between 0.001 and 2.000 inches');
+                }
                 await updateConfig({
-                    auto_bump_enabled: autoBumpCheckbox.checked
+                    auto_bump_enabled: autoBumpCheckbox.checked,
+                    default_material_life: materialLife
                 });
                 showConfigAlert('Configuration saved successfully', 'success');
             } catch (error) {
@@ -537,6 +557,7 @@
                             <th>Orientation</th>
                             <th>Station</th>
                             <th>Notes</th>
+                            <th>Material Life</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -563,6 +584,11 @@
                                 <td>
                                     <input type="text" class="form-input cam-field" data-field="notes" data-cam-id="${cam.id}"
                                         value="${cam.notes || ''}" placeholder="Notes" style="padding: 0.5rem;">
+                                </td>
+                                <td>
+                                    <input type="number" class="form-input cam-field" data-field="max_material_life" data-cam-id="${cam.id}"
+                                        value="${cam.max_material_life || 0.375}" step="0.001" min="0.001" max="2.000"
+                                        style="padding: 0.5rem; width: 80px;">
                                 </td>
                                 <td>
                                     <button class="btn btn-success save-cam-btn" data-cam-id="${cam.id}" style="padding: 0.5rem 1rem;">
@@ -612,7 +638,11 @@
             fields.forEach(field => {
                 const fieldName = field.dataset.field;
                 const value = field.value.trim();
-                updates[fieldName] = value || null;
+                if (fieldName === 'max_material_life') {
+                    updates[fieldName] = value ? parseFloat(value) : null;
+                } else {
+                    updates[fieldName] = value || null;
+                }
             });
 
             try {
