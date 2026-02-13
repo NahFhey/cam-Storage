@@ -225,9 +225,9 @@
         inactivityTimer = setTimeout(function() {
             console.log('Inactivity timeout - logging out');
             authLogout().then(function() {
-                window.showLoginOverlay();
-                updateNavUser();
-                updateAdminVisibility();
+                // Redirect to entry screen to prevent non-admin users
+                // from seeing admin areas after a session timeout
+                window.location.href = '/static/index.html';
             });
         }, INACTIVITY_TIMEOUT_MS);
     }
@@ -281,9 +281,9 @@
 
         logoutBtn.addEventListener('click', async () => {
             await authLogout();
-            window.showLoginOverlay();
-            updateNavUser();
-            updateAdminVisibility();
+            // Redirect to entry screen to prevent non-admin users
+            // from seeing admin areas after an admin logs out
+            window.location.href = '/static/index.html';
         });
     }
 
