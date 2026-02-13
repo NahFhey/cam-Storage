@@ -479,6 +479,69 @@ nav .nav-links a.active {
     color: white;
 }
 
+/* Candidates grouped-by-set table layout */
+.candidates-container {
+    margin: 1rem 0;
+}
+
+.candidates-table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.candidates-table td {
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: middle;
+}
+
+.candidates-snumber-cell {
+    font-size: 1.25rem;
+    font-weight: 700;
+    text-align: center;
+    padding: 1rem;
+    background: var(--dark-bg);
+    color: white;
+    width: 100px;
+}
+
+.candidates-set-cell {
+    font-size: 1.125rem;
+    font-weight: 700;
+    text-align: center;
+    padding: 1rem;
+    color: white;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    width: 110px;
+}
+
+.candidates-set-cell:hover {
+    opacity: 0.85;
+}
+
+.candidates-set-cell:active {
+    opacity: 0.7;
+}
+
+.candidates-cam-cell {
+    padding: 0.75rem 1rem;
+    font-size: 1.125rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.candidates-station-cell {
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.candidates-cam-cell:hover,
+.candidates-station-cell:hover {
+    background: var(--light-bg);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .container {

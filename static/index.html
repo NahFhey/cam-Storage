@@ -52,7 +52,7 @@
         <!-- Multiple Candidates -->
         <div id="candidatesCard" class="card hidden">
             <h3 class="card-header">Select Tool</h3>
-            <ul id="candidatesList" class="selection-list"></ul>
+            <div id="candidatesList" class="candidates-container"></div>
         </div>
 
         <!-- Move Screen (shown after selection) -->
@@ -227,36 +227,81 @@
 
         function showCandidates(candidates, job) {
             currentJob = job;
-            candidatesList.innerHTML = '';
 
+            // Group by set_no
+            const sets = {};
             candidates.forEach(cam => {
-                const li = document.createElement('li');
+                if (!sets[cam.set_no]) sets[cam.set_no] = [];
+                sets[cam.set_no].push(cam);
+            });
 
-                // Build text with die position and orientation
-                let camText = `S${job.s_number} Set${cam.set_no} Cam${cam.cam_no}`;
-                if (cam.die_position) {
-                    camText += ` (${cam.die_position.toUpperCase()})`;
-                }
-                if (cam.enter_die_steel) {
-                    camText += ` - ${cam.enter_die_steel}`;
-                }
-                camText += ` - Currently in ${formatStation(cam.status_station)}`;
+            // Priority: refill (highest) > sharpen > active > cabinet (lowest)
+            const stationPriority = { refill: 4, sharpen: 3, active: 2, cabinet: 1 };
+            const stationBtnClass = { refill: 'btn-danger', sharpen: 'btn-warning', active: 'btn-success', cabinet: 'btn-primary' };
 
-                li.textContent = camText;
-
-                // Color-code based on status
-                const stationColors = {
-                    'active': '#dcfce7',    // green
-                    'sharpen': '#fed7aa',   // orange
-                    'cabinet': '#dbeafe',   // blue
-                    'refill': '#fecaca'     // red
-                };
-                li.style.backgroundColor = stationColors[cam.status_station] || '#f3f4f6';
-
-                li.addEventListener('click', () => {
-                    showMoveScreen(cam, job);
+            function getSetPriorityClass(cams) {
+                let highest = 0, station = 'cabinet';
+                cams.forEach(cam => {
+                    const p = stationPriority[cam.status_station] || 0;
+                    if (p > highest) { highest = p; station = cam.status_station; }
                 });
-                candidatesList.appendChild(li);
+                return stationBtnClass[station] || 'btn-primary';
+            }
+
+            const sortedSetNos = Object.keys(sets).map(Number).sort((a, b) => a - b);
+            const totalRows = candidates.length;
+
+            let html = '<div class="table-responsive"><table class="table candidates-table"><tbody>';
+            let firstSet = true;
+
+            sortedSetNos.forEach(setNo => {
+                const cams = sets[setNo].sort((a, b) => a.cam_no - b.cam_no);
+                const btnClass = getSetPriorityClass(cams);
+
+                cams.forEach((cam, index) => {
+                    html += '<tr>';
+
+                    // S-number cell: spans ALL rows, only on very first row
+                    if (firstSet && index === 0) {
+                        html += `<td rowspan="${totalRows}" class="candidates-snumber-cell">
+                            <strong>S${job.s_number}</strong>
+                        </td>`;
+                    }
+
+                    // Set cell: spans this set's rows, only on first cam of each set
+                    if (index === 0) {
+                        html += `<td rowspan="${cams.length}" class="candidates-set-cell ${btnClass}"
+                            onclick="showMoveScreen(window._candidatesCams['${setNo}_${cam.id}'], window._candidatesJob, true)"
+                            role="button" tabindex="0">
+                            <strong>Set ${setNo}</strong>
+                        </td>`;
+                    }
+
+                    // Cam cell + Station badge: clickable for individual cam
+                    html += `<td class="candidates-cam-cell"
+                        onclick="showMoveScreen(window._candidatesCams['${setNo}_${cam.id}'], window._candidatesJob, false)"
+                        role="button" tabindex="0">
+                        Cam ${cam.cam_no}
+                    </td>`;
+                    html += `<td class="candidates-station-cell"
+                        onclick="showMoveScreen(window._candidatesCams['${setNo}_${cam.id}'], window._candidatesJob, false)"
+                        role="button" tabindex="0">
+                        <span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span>
+                    </td>`;
+
+                    html += '</tr>';
+                    if (index === 0) firstSet = false;
+                });
+            });
+
+            html += '</tbody></table></div>';
+            candidatesList.innerHTML = html;
+
+            // Store data references for onclick handlers
+            window._candidatesJob = job;
+            window._candidatesCams = {};
+            candidates.forEach(cam => {
+                window._candidatesCams[`${cam.set_no}_${cam.id}`] = cam;
             });
 
             resultsCard.classList.add('hidden');
@@ -264,9 +309,10 @@
             moveCard.classList.add('hidden');
         }
 
-        function showMoveScreen(camItem, job) {
+        function showMoveScreen(camItem, job, moveEntireSet) {
             currentCamItem = camItem;
             currentJob = job;
+            document.getElementById('moveEntireSetToggle').checked = !!moveEntireSet;
 
             // Build tool info with die position and orientation
             let toolInfoText = `S${job.s_number} Set${camItem.set_no} Cam${camItem.cam_no}`;

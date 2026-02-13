@@ -247,7 +247,7 @@ class TestInputValidation:
         assert response.status_code == 422
 
     def test_bulk_create_validation(self, client, auth_headers):
-        """Test bulk create validation"""
+        """Test bulk create validation with num_sets + cams payload"""
         # Create job
         job_response = client.post("/api/jobs", json={
             "s_number": "S8400",
@@ -256,32 +256,104 @@ class TestInputValidation:
         }, headers=auth_headers)
         job_id = job_response.json()['id']
 
-        # Invalid: duplicate set numbers
+        # Invalid: num_sets is 0
         response = client.post("/api/cam-items/bulk", json={
             "job_id": job_id,
-            "sets": [1, 1, 2],
-            "cams_per_set": 2,
-            "initial_station": "cabinet"
+            "num_sets": 0,
+            "cams": [{"cam_no": 1}]
         }, headers=auth_headers)
         assert response.status_code == 422
 
-        # Invalid: zero or negative set numbers
+        # Invalid: num_sets is negative
         response = client.post("/api/cam-items/bulk", json={
             "job_id": job_id,
-            "sets": [0, 1, 2],
-            "cams_per_set": 2,
-            "initial_station": "cabinet"
+            "num_sets": -1,
+            "cams": [{"cam_no": 1}]
         }, headers=auth_headers)
         assert response.status_code == 422
 
-        # Invalid: too many cams per set
+        # Invalid: num_sets too large
         response = client.post("/api/cam-items/bulk", json={
             "job_id": job_id,
-            "sets": [1, 2],
-            "cams_per_set": 101,
-            "initial_station": "cabinet"
+            "num_sets": 101,
+            "cams": [{"cam_no": 1}]
         }, headers=auth_headers)
         assert response.status_code == 422
+
+        # Invalid: empty cams list
+        response = client.post("/api/cam-items/bulk", json={
+            "job_id": job_id,
+            "num_sets": 3,
+            "cams": []
+        }, headers=auth_headers)
+        assert response.status_code == 422
+
+        # Invalid: duplicate cam_no in cams
+        response = client.post("/api/cam-items/bulk", json={
+            "job_id": job_id,
+            "num_sets": 2,
+            "cams": [
+                {"cam_no": 1, "die_position": "upper"},
+                {"cam_no": 1, "die_position": "lower"}
+            ]
+        }, headers=auth_headers)
+        assert response.status_code == 422
+
+        # Invalid: cam_no is 0
+        response = client.post("/api/cam-items/bulk", json={
+            "job_id": job_id,
+            "num_sets": 1,
+            "cams": [{"cam_no": 0}]
+        }, headers=auth_headers)
+        assert response.status_code == 422
+
+        # Invalid: bad die_position
+        response = client.post("/api/cam-items/bulk", json={
+            "job_id": job_id,
+            "num_sets": 1,
+            "cams": [{"cam_no": 1, "die_position": "middle"}]
+        }, headers=auth_headers)
+        assert response.status_code == 422
+
+    def test_bulk_create_success(self, client, auth_headers):
+        """Test successful bulk create with new payload"""
+        job_response = client.post("/api/jobs", json={
+            "s_number": "S8450",
+            "title": "Bulk Success Test",
+            "priority_level": "medium"
+        }, headers=auth_headers)
+        job_id = job_response.json()['id']
+
+        response = client.post("/api/cam-items/bulk", json={
+            "job_id": job_id,
+            "num_sets": 3,
+            "cams": [
+                {"cam_no": 1, "die_position": "upper", "enter_die_steel": "enter"},
+                {"cam_no": 2, "die_position": "lower", "enter_die_steel": "exit"}
+            ]
+        }, headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data['success'] is True
+        assert data['created_count'] == 6  # 3 sets x 2 cams
+
+        # Verify items were created with correct attributes
+        job_data = client.get(f"/api/jobs/{job_id}").json()
+        cam_items = job_data['cam_items']
+        assert len(cam_items) == 6
+
+        # All items should be in cabinet station
+        for item in cam_items:
+            assert item['status_station'] == 'cabinet'
+
+        # Check die_position and enter_die_steel were set correctly
+        set1_cam1 = next(c for c in cam_items if c['set_no'] == 1 and c['cam_no'] == 1)
+        assert set1_cam1['die_position'] == 'upper'
+        assert set1_cam1['enter_die_steel'] == 'enter'
+
+        set2_cam2 = next(c for c in cam_items if c['set_no'] == 2 and c['cam_no'] == 2)
+        assert set2_cam2['die_position'] == 'lower'
+        assert set2_cam2['enter_die_steel'] == 'exit'
 
     def test_station_validation_in_filters(self, client):
         """Test station validation in query filters"""

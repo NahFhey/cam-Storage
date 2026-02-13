@@ -113,25 +113,17 @@
                     </select>
                 </div>
 
-                <div class="grid grid-2">
-                    <div class="form-group">
-                        <label class="form-label" for="setNumbers">Set Numbers (comma-separated)</label>
-                        <input type="text" id="setNumbers" class="form-input" placeholder="1,2,3" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="camsPerSet">CAMs per Set</label>
-                        <input type="number" id="camsPerSet" class="form-input" value="4" min="1" max="20" required>
-                    </div>
+                <div class="form-group">
+                    <label class="form-label" for="numSets">Number of Sets</label>
+                    <input type="number" id="numSets" class="form-input" value="1" min="1" max="100" required>
+                    <p style="margin-top: 0.25rem; color: #666; font-size: 0.85rem;">Creates sets numbered 1 through the value entered.</p>
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label" for="initialStation">Initial Station</label>
-                    <select id="initialStation" class="form-select" required>
-                        <option value="cabinet" selected>Cabinet</option>
-                        <option value="active">Active</option>
-                        <option value="sharpen">Sharpen</option>
-                        <option value="refill">Refill</option>
-                    </select>
+                    <label class="form-label">CAM Configurations</label>
+                    <p style="margin-bottom: 0.5rem; color: #666; font-size: 0.85rem;">Define each CAM that will be created in every set.</p>
+                    <div id="camConfigRows"></div>
+                    <button type="button" id="addCamBtn" class="btn btn-primary" style="margin-top: 0.5rem;">+ Add CAM</button>
                 </div>
 
                 <button type="submit" class="btn btn-success btn-large">Create CAM Items</button>
@@ -271,6 +263,49 @@
         // Bulk Create CAM Items
         const bulkCreateForm = document.getElementById('bulkCreateForm');
         const bulkJobId = document.getElementById('bulkJobId');
+        const camConfigRows = document.getElementById('camConfigRows');
+        const addCamBtn = document.getElementById('addCamBtn');
+        let camCounter = 0;
+
+        function addCamRow() {
+            camCounter++;
+            const row = document.createElement('div');
+            row.className = 'cam-config-row';
+            row.dataset.camIndex = camCounter;
+            row.style.cssText = 'display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.5rem; padding: 0.5rem; background: #f8fafc; border-radius: 4px;';
+            row.innerHTML = `
+                <span style="font-weight: bold; min-width: 70px;">CAM ${camCounter}</span>
+                <select class="form-select cam-die-position" style="padding: 0.5rem; flex: 1;">
+                    <option value="">Die Position...</option>
+                    <option value="upper">Upper</option>
+                    <option value="lower">Lower</option>
+                </select>
+                <select class="form-select cam-enter-die-steel" style="padding: 0.5rem; flex: 1;">
+                    <option value="">Orientation...</option>
+                    <option value="enter">Enter</option>
+                    <option value="exit">Exit</option>
+                </select>
+                <button type="button" class="btn btn-danger remove-cam-btn" style="padding: 0.5rem 0.75rem; min-height: auto;">X</button>
+            `;
+            camConfigRows.appendChild(row);
+            row.querySelector('.remove-cam-btn').addEventListener('click', () => {
+                row.remove();
+                renumberCamRows();
+            });
+        }
+
+        function renumberCamRows() {
+            const rows = camConfigRows.querySelectorAll('.cam-config-row');
+            camCounter = 0;
+            rows.forEach((row, index) => {
+                camCounter = index + 1;
+                row.dataset.camIndex = camCounter;
+                row.querySelector('span').textContent = `CAM ${camCounter}`;
+            });
+        }
+
+        addCamBtn.addEventListener('click', addCamRow);
+        addCamRow();
 
         bulkCreateForm.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -279,23 +314,41 @@
             submitBtn.disabled = true;
 
             try {
-                const setNumbersStr = document.getElementById('setNumbers').value.trim();
-                const sets = setNumbersStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-
-                if (sets.length === 0) {
-                    throw new Error('Please enter valid set numbers');
+                const numSets = parseInt(document.getElementById('numSets').value);
+                if (!numSets || numSets < 1) {
+                    throw new Error('Please enter a valid number of sets');
                 }
+
+                const camRows = camConfigRows.querySelectorAll('.cam-config-row');
+                if (camRows.length === 0) {
+                    throw new Error('Please add at least one CAM configuration');
+                }
+
+                const cams = [];
+                camRows.forEach((row, index) => {
+                    const diePosition = row.querySelector('.cam-die-position').value || null;
+                    const enterDieSteel = row.querySelector('.cam-enter-die-steel').value || null;
+                    cams.push({
+                        cam_no: index + 1,
+                        die_position: diePosition,
+                        enter_die_steel: enterDieSteel,
+                        exit_die_steel: null
+                    });
+                });
 
                 const bulkData = {
                     job_id: parseInt(bulkJobId.value),
-                    sets: sets,
-                    cams_per_set: parseInt(document.getElementById('camsPerSet').value),
-                    initial_station: document.getElementById('initialStation').value
+                    num_sets: numSets,
+                    cams: cams
                 };
 
                 const result = await createCamItemsBulk(bulkData);
                 showBulkAlert(`Created ${result.created_count} CAM items successfully`, 'success');
+
                 bulkCreateForm.reset();
+                camConfigRows.innerHTML = '';
+                camCounter = 0;
+                addCamRow();
 
                 // Refresh the edit jobs dropdown so the job appears there
                 await loadJobsForEdit();
