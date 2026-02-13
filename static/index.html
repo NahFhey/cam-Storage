@@ -206,7 +206,7 @@
 
                 if (result.status === 'exact') {
                     // Exact match found
-                    showMoveScreen(result.cam_item, result.job);
+                    await showMoveScreen(result.cam_item, result.job);
                 } else if (result.status === 'multiple') {
                     // Multiple candidates
                     showCandidates(result.candidates, result.job);
@@ -309,7 +309,7 @@
             moveCard.classList.add('hidden');
         }
 
-        function showMoveScreen(camItem, job, moveEntireSet) {
+        async function showMoveScreen(camItem, job, moveEntireSet) {
             currentCamItem = camItem;
             currentJob = job;
             document.getElementById('moveEntireSetToggle').checked = !!moveEntireSet;
