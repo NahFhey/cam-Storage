@@ -133,13 +133,17 @@ async def move_cam_to_station(
     )
     move_id = cursor.lastrowid
 
-    # Lifespan tracking hooks
-    if from_station == 'sharpen' and to_station == 'cabinet' and material_removed:
-        await update_lifespan_on_sharpen(db, cam_item_id, material_removed)
-    if to_station == 'refill':
-        await close_lifespan_on_refill(db, cam_item_id)
-    if from_station == 'refill' and to_station != 'refill':
-        await open_new_lifespan(db, cam_item_id)
+    # Lifespan tracking hooks (non-blocking: move succeeds even if lifespan tracking fails)
+    try:
+        if from_station == 'sharpen' and to_station == 'cabinet' and material_removed:
+            await update_lifespan_on_sharpen(db, cam_item_id, material_removed)
+        if to_station == 'refill':
+            await close_lifespan_on_refill(db, cam_item_id)
+        if from_station == 'refill' and to_station != 'refill':
+            await open_new_lifespan(db, cam_item_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Lifespan tracking failed for cam {cam_item_id}: {e}")
 
     await db.commit()
 
@@ -203,57 +207,61 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
         (revert_to, cam_item_id)
     )
 
-    # Reverse lifespan changes for the undone move
-    undone_from = last_move['from_station']
-    undone_to = last_move['to_station']
-    undone_material = last_move['material_removed']
+    # Reverse lifespan changes for the undone move (non-blocking)
+    try:
+        undone_from = last_move['from_station']
+        undone_to = last_move['to_station']
+        undone_material = last_move['material_removed']
 
-    # Undo sharpen->cabinet: decrement lifespan totals
-    if undone_from == 'sharpen' and undone_to == 'cabinet' and undone_material:
-        active_ls = await get_active_lifespan(db, cam_item_id)
-        if active_ls:
-            new_total = max(0, active_ls['total_material_removed'] - undone_material)
-            new_count = max(0, active_ls['sharpen_count'] - 1)
+        # Undo sharpen->cabinet: decrement lifespan totals
+        if undone_from == 'sharpen' and undone_to == 'cabinet' and undone_material:
+            active_ls = await get_active_lifespan(db, cam_item_id)
+            if active_ls:
+                new_total = max(0, active_ls['total_material_removed'] - undone_material)
+                new_count = max(0, active_ls['sharpen_count'] - 1)
+                await db.execute(
+                    "UPDATE tool_lifespans SET total_material_removed = ?, sharpen_count = ? WHERE id = ?",
+                    (new_total, new_count, active_ls['id'])
+                )
+
+        # Undo move-to-refill: reopen the closed lifespan
+        if undone_to == 'refill':
             await db.execute(
-                "UPDATE tool_lifespans SET total_material_removed = ?, sharpen_count = ? WHERE id = ?",
-                (new_total, new_count, active_ls['id'])
+                """UPDATE tool_lifespans SET ended_at = NULL
+                   WHERE cam_item_id = ? AND ended_at IS NOT NULL
+                   AND lifespan_number = (
+                       SELECT MAX(lifespan_number) FROM tool_lifespans
+                       WHERE cam_item_id = ? AND ended_at IS NOT NULL
+                   )""",
+                (cam_item_id, cam_item_id)
             )
 
-    # Undo move-to-refill: reopen the closed lifespan
-    if undone_to == 'refill':
-        await db.execute(
-            """UPDATE tool_lifespans SET ended_at = NULL
-               WHERE cam_item_id = ? AND ended_at IS NOT NULL
-               AND lifespan_number = (
-                   SELECT MAX(lifespan_number) FROM tool_lifespans
-                   WHERE cam_item_id = ? AND ended_at IS NOT NULL
-               )""",
-            (cam_item_id, cam_item_id)
-        )
-
-    # Undo move-from-refill: delete the newly opened lifespan, reopen previous
-    if undone_from == 'refill' and undone_to != 'refill':
-        # Delete the lifespan that was just opened (should have 0 sharpenings)
-        await db.execute(
-            """DELETE FROM tool_lifespans
-               WHERE cam_item_id = ? AND ended_at IS NULL
-               AND sharpen_count = 0 AND total_material_removed = 0
-               AND lifespan_number = (
-                   SELECT MAX(lifespan_number) FROM tool_lifespans
+        # Undo move-from-refill: delete the newly opened lifespan, reopen previous
+        if undone_from == 'refill' and undone_to != 'refill':
+            # Delete the lifespan that was just opened (should have 0 sharpenings)
+            await db.execute(
+                """DELETE FROM tool_lifespans
                    WHERE cam_item_id = ? AND ended_at IS NULL
-               )""",
-            (cam_item_id, cam_item_id)
-        )
-        # Reopen the previous completed lifespan
-        await db.execute(
-            """UPDATE tool_lifespans SET ended_at = NULL
-               WHERE cam_item_id = ? AND ended_at IS NOT NULL
-               AND lifespan_number = (
-                   SELECT MAX(lifespan_number) FROM tool_lifespans
+                   AND sharpen_count = 0 AND total_material_removed = 0
+                   AND lifespan_number = (
+                       SELECT MAX(lifespan_number) FROM tool_lifespans
+                       WHERE cam_item_id = ? AND ended_at IS NULL
+                   )""",
+                (cam_item_id, cam_item_id)
+            )
+            # Reopen the previous completed lifespan
+            await db.execute(
+                """UPDATE tool_lifespans SET ended_at = NULL
                    WHERE cam_item_id = ? AND ended_at IS NOT NULL
-               )""",
-            (cam_item_id, cam_item_id)
-        )
+                   AND lifespan_number = (
+                       SELECT MAX(lifespan_number) FROM tool_lifespans
+                       WHERE cam_item_id = ? AND ended_at IS NOT NULL
+                   )""",
+                (cam_item_id, cam_item_id)
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Lifespan undo tracking failed for cam {cam_item_id}: {e}")
 
     await db.commit()
 

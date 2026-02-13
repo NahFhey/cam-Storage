@@ -1082,6 +1082,11 @@ async def move_cam(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Move failed for cam {move.cam_item_id}: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {type(e).__name__}: {e}")
 
 @app.post("/api/moves/undo/{cam_item_id}")
 async def undo_move(
