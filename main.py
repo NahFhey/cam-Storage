@@ -23,7 +23,7 @@ import os
 import config
 from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin
 from entry_parser import parse_manual_entry, resolve_entry
-from business_logic import move_cam_to_station, undo_last_move, generate_hot_list
+from business_logic import move_cam_to_station, undo_last_move, generate_hot_list, get_lifespan_forecast
 
 # Configure logging
 logging.basicConfig(
@@ -181,6 +181,7 @@ class CamItemCreate(BaseModel):
     status_station: str = Field("cabinet", description="Initial station")
     notes: Optional[str] = Field(None, max_length=1000)
     eol_cycles_expected: Optional[int] = Field(None, ge=0, description="Expected end-of-life cycles")
+    max_material_life: Optional[float] = Field(None, ge=0.001, le=2.0, description="Max material life in inches (default 0.375)")
 
     @field_validator('die_position')
     @classmethod
@@ -204,6 +205,7 @@ class CamItemUpdate(BaseModel):
     exit_die_steel: Optional[str] = Field(None, max_length=50)
     notes: Optional[str] = Field(None, max_length=1000)
     eol_cycles_expected: Optional[int] = Field(None, ge=0)
+    max_material_life: Optional[float] = Field(None, ge=0.001, le=2.0)
 
     @field_validator('die_position')
     @classmethod
@@ -261,6 +263,7 @@ class EntryResolveRequest(BaseModel):
 
 class ConfigUpdate(BaseModel):
     auto_bump_enabled: Optional[bool] = None
+    default_material_life: Optional[float] = Field(None, ge=0.001, le=2.0)
 
 class LoginRequest(BaseModel):
     pin: str = Field(..., min_length=1, max_length=20, description="User PIN")
@@ -819,15 +822,22 @@ async def create_cam_item(
 ):
     """Create a single cam item (requires admin authentication)"""
     try:
+        # Determine material life: use provided value, or fetch global default
+        material_life = item.max_material_life
+        if material_life is None:
+            default_life_str = await get_config_value('default_material_life', str(config.DEFAULT_MATERIAL_LIFE), db=db)
+            material_life = float(default_life_str)
+
         cursor = await db.execute(
             """
             INSERT INTO cam_items
             (job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
-             status_station, notes, eol_cycles_expected)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             status_station, notes, eol_cycles_expected, max_material_life)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (item.job_id, item.set_no, item.cam_no, item.die_position, item.enter_die_steel,
-             item.exit_die_steel, item.status_station, item.notes, item.eol_cycles_expected)
+             item.exit_die_steel, item.status_station, item.notes, item.eol_cycles_expected,
+             material_life)
         )
         await db.commit()
         cam_item_id = cursor.lastrowid
@@ -839,6 +849,13 @@ async def create_cam_item(
             VALUES (?, 'new', ?, ?, 'Initial creation')
             """,
             (cam_item_id, item.status_station, config.DEFAULT_OPERATOR)
+        )
+
+        # Create initial lifespan
+        await db.execute(
+            """INSERT INTO tool_lifespans (cam_item_id, lifespan_number, max_material_life)
+               VALUES (?, 1, ?)""",
+            (cam_item_id, material_life)
         )
         await db.commit()
 
@@ -887,6 +904,10 @@ async def update_cam_item(
     if item.eol_cycles_expected is not None:
         update_parts.append("eol_cycles_expected = ?")
         values.append(item.eol_cycles_expected)
+
+    if item.max_material_life is not None:
+        update_parts.append("max_material_life = ?")
+        values.append(item.max_material_life)
 
     if not update_parts:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -957,6 +978,21 @@ async def create_cam_items_bulk(
                 """INSERT INTO moves (cam_item_id, from_station, to_station, operator, notes)
                    VALUES (?, 'new', ?, ?, 'Bulk creation')""",
                 move_rows
+            )
+
+        # Create initial lifespans for newly created items
+        default_life_str = await get_config_value('default_material_life', str(config.DEFAULT_MATERIAL_LIFE), db=db)
+        default_life = float(default_life_str)
+        lifespan_rows = [
+            (row['id'], default_life)
+            for row in created_rows
+            if row['id'] not in existing_moves
+        ]
+        if lifespan_rows:
+            await db.executemany(
+                """INSERT OR IGNORE INTO tool_lifespans (cam_item_id, lifespan_number, max_material_life)
+                   VALUES (?, 1, ?)""",
+                lifespan_rows
             )
 
     await db.commit()
@@ -1127,6 +1163,14 @@ async def get_sharpen_stats(cam_item_id: int, db: aiosqlite.Connection = Depends
         "last_sharpen_date": stats['last_sharpen_date']
     }
 
+@app.get("/api/cam-items/{cam_item_id}/lifespan")
+async def get_cam_lifespan(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
+    """Get lifespan tracking and forecast for a CAM item"""
+    cursor = await db.execute("SELECT id FROM cam_items WHERE id = ?", (cam_item_id,))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="CAM item not found")
+    return await get_lifespan_forecast(db, cam_item_id)
+
 # ========== Hot List Endpoint ==========
 
 @app.get("/api/hot-list")
@@ -1279,14 +1323,45 @@ async def analytics_sharpen_backlog(db: aiosqlite.Connection = Depends(get_db)):
     stats = await cursor.fetchone()
     return dict(stats)
 
+@app.get("/api/analytics/refill-forecast")
+async def analytics_refill_forecast(limit: int = 50, db: aiosqlite.Connection = Depends(get_db)):
+    """Get tools approaching refill, sorted by percent life used"""
+    cursor = await db.execute("""
+        SELECT
+            tl.cam_item_id,
+            tl.total_material_removed,
+            tl.sharpen_count,
+            tl.max_material_life,
+            tl.started_at,
+            c.set_no,
+            c.cam_no,
+            c.status_station,
+            j.s_number,
+            j.title,
+            ROUND((tl.total_material_removed / tl.max_material_life) * 100, 1) as percent_used,
+            ROUND(tl.max_material_life - tl.total_material_removed, 3) as material_remaining
+        FROM tool_lifespans tl
+        JOIN cam_items c ON tl.cam_item_id = c.id
+        JOIN jobs j ON c.job_id = j.id
+        WHERE tl.ended_at IS NULL
+          AND tl.max_material_life > 0
+          AND tl.sharpen_count > 0
+        ORDER BY percent_used DESC
+        LIMIT ?
+    """, (limit,))
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
 # ========== Configuration Endpoints ==========
 
 @app.get("/api/config")
 async def get_config():
     """Get current configuration"""
     auto_bump = await get_config_value('auto_bump_enabled', 'false')
+    default_life = await get_config_value('default_material_life', str(config.DEFAULT_MATERIAL_LIFE))
     return {
-        "auto_bump_enabled": auto_bump.lower() == 'true'
+        "auto_bump_enabled": auto_bump.lower() == 'true',
+        "default_material_life": float(default_life)
     }
 
 @app.patch("/api/config")
@@ -1299,6 +1374,12 @@ async def update_config(
         await set_config_value(
             'auto_bump_enabled',
             'true' if config_update.auto_bump_enabled else 'false'
+        )
+
+    if config_update.default_material_life is not None:
+        await set_config_value(
+            'default_material_life',
+            str(config_update.default_material_life)
         )
 
     return await get_config()

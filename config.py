@@ -9,6 +9,7 @@ DATABASE_PATH = os.getenv("CAM_DB_PATH", "./cam_tracking.db")
 # Application settings
 AUTO_BUMP_ENABLED = os.getenv("AUTO_BUMP_ENABLED", "false").lower() == "true"
 DEFAULT_OPERATOR = os.getenv("DEFAULT_OPERATOR", "kiosk")
+DEFAULT_MATERIAL_LIFE = float(os.getenv("DEFAULT_MATERIAL_LIFE", "0.375"))
 
 # Server settings
 HOST = os.getenv("HOST", "0.0.0.0")

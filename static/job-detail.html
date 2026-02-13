@@ -110,21 +110,30 @@
                 sets[cam.set_no].push(cam);
             });
 
-            // Fetch sharpen stats for all cams
+            // Fetch sharpen stats and lifespan data for all cams in parallel
             const statsPromises = camItems.map(cam =>
                 fetch(`/api/cam-items/${cam.id}/sharpen-stats`)
                     .then(r => r.json())
                     .then(stats => ({cam_id: cam.id, stats}))
                     .catch(() => ({cam_id: cam.id, stats: null}))
             );
-            const statsResults = await Promise.all(statsPromises);
+            const lifespanPromises = camItems.map(cam =>
+                fetch(`/api/cam-items/${cam.id}/lifespan`)
+                    .then(r => r.json())
+                    .then(data => ({cam_id: cam.id, data}))
+                    .catch(() => ({cam_id: cam.id, data: null}))
+            );
+            const [statsResults, lifespanResults] = await Promise.all([
+                Promise.all(statsPromises),
+                Promise.all(lifespanPromises)
+            ]);
             const statsMap = {};
-            statsResults.forEach(r => {
-                statsMap[r.cam_id] = r.stats;
-            });
+            statsResults.forEach(r => { statsMap[r.cam_id] = r.stats; });
+            const lifespanMap = {};
+            lifespanResults.forEach(r => { lifespanMap[r.cam_id] = r.data; });
 
             let html = '<div class="table-responsive"><table class="table"><thead><tr>';
-            html += '<th>Set</th><th>Cam</th><th>Station</th><th>Sharpen Count</th><th>Last Removed</th><th>Avg Removed</th><th>Notes</th>';
+            html += '<th>Set</th><th>Cam</th><th>Station</th><th>Sharpen Count</th><th>Last Removed</th><th>Avg Removed</th><th>Total Removed</th><th>Life Remaining</th><th>Life %</th><th>Notes</th>';
             html += '</tr></thead><tbody>';
 
             Object.keys(sets).sort((a, b) => parseInt(a) - parseInt(b)).forEach(setNo => {
@@ -132,6 +141,8 @@
 
                 cams.forEach((cam, index) => {
                     const stats = statsMap[cam.id];
+                    const ls = lifespanMap[cam.id];
+                    const currentLs = ls && ls.current_lifespan;
                     html += '<tr>';
                     if (index === 0) {
                         html += `<td rowspan="${cams.length}"><strong>Set ${setNo}</strong></td>`;
@@ -141,6 +152,27 @@
                     html += `<td>${stats ? stats.sharpen_count : 0}</td>`;
                     html += `<td>${stats && stats.last_material_removed ? stats.last_material_removed.toFixed(3) + '"' : '-'}</td>`;
                     html += `<td>${stats && stats.avg_material_removed ? stats.avg_material_removed.toFixed(3) + '"' : '-'}</td>`;
+
+                    // Total Removed (current lifespan)
+                    html += `<td>${currentLs && currentLs.total_removed > 0 ? currentLs.total_removed.toFixed(3) + '"' : '-'}</td>`;
+
+                    // Life Remaining
+                    const remaining = currentLs ? currentLs.material_remaining : null;
+                    const remainingStyle = remaining !== null && remaining < 0.050 ? ' style="color: #dc2626; font-weight: bold;"' : '';
+                    html += `<td${remainingStyle}>${remaining !== null ? remaining.toFixed(3) + '"' : '-'}</td>`;
+
+                    // Life % with progress bar
+                    const pctUsed = currentLs ? currentLs.percent_life_used : 0;
+                    const barColor = pctUsed >= 90 ? '#dc2626' : pctUsed >= 70 ? '#d97706' : '#16a34a';
+                    html += `<td>
+                        <div style="display:flex; align-items:center; gap:0.5rem;">
+                            <div style="flex:1; height:8px; background:#e2e8f0; border-radius:4px; overflow:hidden; min-width:60px;">
+                                <div style="width:${Math.min(pctUsed, 100)}%; height:100%; background:${barColor}; border-radius:4px;"></div>
+                            </div>
+                            <span style="font-size:0.8rem; min-width:2.5rem; text-align:right;">${pctUsed.toFixed(0)}%</span>
+                        </div>
+                    </td>`;
+
                     html += `<td>${cam.notes || '-'}</td>`;
                     html += '</tr>';
                 });

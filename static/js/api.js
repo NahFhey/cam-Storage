@@ -273,6 +273,15 @@ async function getSharpenBacklog() {
     return apiCall('/analytics/sharpen-backlog');
 }
 
+async function getRefillForecast(limit = 50) {
+    return apiCall(`/analytics/refill-forecast?limit=${limit}`);
+}
+
+// Lifespan
+async function getCamLifespan(camItemId) {
+    return apiCall(`/cam-items/${camItemId}/lifespan`);
+}
+
 // Configuration
 async function getConfig() {
     return apiCall('/config');
