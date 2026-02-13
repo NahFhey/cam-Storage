@@ -52,7 +52,7 @@
         <!-- Multiple Candidates -->
         <div id="candidatesCard" class="card hidden">
             <h3 class="card-header">Select Tool</h3>
-            <ul id="candidatesList" class="selection-list"></ul>
+            <div id="candidatesList" class="candidates-container"></div>
         </div>
 
         <!-- Move Screen (shown after selection) -->
@@ -229,34 +229,66 @@
             currentJob = job;
             candidatesList.innerHTML = '';
 
+            // Group by set_no
+            const sets = {};
             candidates.forEach(cam => {
-                const li = document.createElement('li');
-
-                // Build text with die position and orientation
-                let camText = `S${job.s_number} Set${cam.set_no} Cam${cam.cam_no}`;
-                if (cam.die_position) {
-                    camText += ` (${cam.die_position.toUpperCase()})`;
+                if (!sets[cam.set_no]) {
+                    sets[cam.set_no] = [];
                 }
-                if (cam.enter_die_steel) {
-                    camText += ` - ${cam.enter_die_steel}`;
-                }
-                camText += ` - Currently in ${formatStation(cam.status_station)}`;
+                sets[cam.set_no].push(cam);
+            });
 
-                li.textContent = camText;
+            // Station priority: refill (highest) > sharpen > active > cabinet (lowest)
+            const stationPriority = { refill: 4, sharpen: 3, active: 2, cabinet: 1 };
+            const stationBtnClass = { refill: 'btn-danger', sharpen: 'btn-warning', active: 'btn-success', cabinet: 'btn-primary' };
 
-                // Color-code based on status
-                const stationColors = {
-                    'active': '#dcfce7',    // green
-                    'sharpen': '#fed7aa',   // orange
-                    'cabinet': '#dbeafe',   // blue
-                    'refill': '#fecaca'     // red
-                };
-                li.style.backgroundColor = stationColors[cam.status_station] || '#f3f4f6';
-
-                li.addEventListener('click', () => {
-                    showMoveScreen(cam, job);
+            function getSetButtonClass(cams) {
+                let highestPriority = 0;
+                let highestStation = 'cabinet';
+                cams.forEach(cam => {
+                    const p = stationPriority[cam.status_station] || 0;
+                    if (p > highestPriority) {
+                        highestPriority = p;
+                        highestStation = cam.status_station;
+                    }
                 });
-                candidatesList.appendChild(li);
+                return stationBtnClass[highestStation] || 'btn-primary';
+            }
+
+            // Sort set numbers numerically and render each as a row
+            Object.keys(sets).map(Number).sort((a, b) => a - b).forEach(setNo => {
+                const cams = sets[setNo].sort((a, b) => a.cam_no - b.cam_no);
+
+                // Create the set row container
+                const row = document.createElement('div');
+                row.className = 'candidates-set-row';
+
+                // Create the Set button (left side)
+                const setBtn = document.createElement('button');
+                setBtn.className = `btn ${getSetButtonClass(cams)} candidates-set-btn`;
+                setBtn.textContent = `Set ${setNo}`;
+                setBtn.addEventListener('click', () => {
+                    showMoveScreen(cams[0], job, true);
+                });
+                row.appendChild(setBtn);
+
+                // Create container for individual cam buttons (right side)
+                const camBtnsContainer = document.createElement('div');
+                camBtnsContainer.className = 'candidates-cam-btns';
+
+                cams.forEach(cam => {
+                    const camBtn = document.createElement('button');
+                    camBtn.className = `btn candidates-cam-btn ${getStationBadgeClass(cam.status_station)}`;
+                    camBtn.innerHTML = `<span class="candidates-cam-label">Cam ${cam.cam_no}</span>` +
+                        `<span class="candidates-cam-station">${formatStation(cam.status_station)}</span>`;
+                    camBtn.addEventListener('click', () => {
+                        showMoveScreen(cam, job, false);
+                    });
+                    camBtnsContainer.appendChild(camBtn);
+                });
+
+                row.appendChild(camBtnsContainer);
+                candidatesList.appendChild(row);
             });
 
             resultsCard.classList.add('hidden');
@@ -264,9 +296,10 @@
             moveCard.classList.add('hidden');
         }
 
-        function showMoveScreen(camItem, job) {
+        function showMoveScreen(camItem, job, moveEntireSet) {
             currentCamItem = camItem;
             currentJob = job;
+            document.getElementById('moveEntireSetToggle').checked = !!moveEntireSet;
 
             // Build tool info with die position and orientation
             let toolInfoText = `S${job.s_number} Set${camItem.set_no} Cam${camItem.cam_no}`;

@@ -479,6 +479,80 @@ nav .nav-links a.active {
     color: white;
 }
 
+/* Candidates grouped-by-set layout */
+.candidates-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin: 1rem 0;
+}
+
+.candidates-set-row {
+    display: flex;
+    align-items: stretch;
+    gap: 0.75rem;
+    min-height: 70px;
+}
+
+.candidates-set-btn {
+    min-width: 120px;
+    max-width: 120px;
+    font-size: 1.25rem;
+    font-weight: 700;
+    border-radius: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    padding: 0.75rem 1rem;
+}
+
+.candidates-cam-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    flex: 1;
+    align-items: stretch;
+}
+
+.candidates-cam-btn {
+    min-width: 100px;
+    min-height: 60px;
+    border: none;
+    border-radius: 0.5rem;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem 1rem;
+    font-weight: 600;
+    transition: all 0.2s;
+    flex: 1;
+    max-width: 160px;
+}
+
+.candidates-cam-btn:hover {
+    opacity: 0.85;
+}
+
+.candidates-cam-btn:active {
+    transform: scale(0.96);
+}
+
+.candidates-cam-label {
+    font-size: 1.125rem;
+    font-weight: 700;
+}
+
+.candidates-cam-station {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    opacity: 0.9;
+    margin-top: 0.25rem;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .container {
@@ -502,5 +576,20 @@ nav .nav-links a.active {
         padding: 1.5rem 2rem;
         font-size: 1.25rem;
         min-height: 80px;
+    }
+
+    .candidates-set-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .candidates-set-btn {
+        min-width: unset;
+        max-width: unset;
+        width: 100%;
+    }
+
+    .candidates-cam-btn {
+        max-width: unset;
     }
 }
