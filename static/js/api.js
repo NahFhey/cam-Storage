@@ -54,12 +54,10 @@ async function apiCall(endpoint, options = {}) {
             headers
         });
 
-        // Handle auth errors
+        // Handle auth errors - redirect to entry screen
         if (response.status === 401) {
             clearAuthToken();
-            if (typeof showLoginOverlay === 'function') {
-                showLoginOverlay();
-            }
+            window.location.href = '/static/index.html';
             throw new Error('Session expired. Please log in again.');
         }
 
