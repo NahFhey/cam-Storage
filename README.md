@@ -14,26 +14,28 @@ The application maintains a complete audit log of all movements, computes priori
 
 ## Features
 
-### Phase 1 Includes:
-- ✅ Manual entry of tool identifiers (no QR scanning yet, but designed for keyboard-wedge input)
+### Current Features:
+- ✅ Manual entry of tool identifiers (designed for keyboard-wedge input)
 - ✅ Touch-first UI with large buttons optimized for shop floor use
 - ✅ Station movement tracking with full audit trail
 - ✅ Optional auto-bump: moving to Active can automatically bump existing Active tool to Sharpen
 - ✅ Undo capability for correcting mistakes
 - ✅ Priority hot list computation based on available sets and refill counts
-- ✅ Analytics dashboards (moves, dwell times, cycle counts, sharpen backlog)
+- ✅ Analytics dashboards (moves, dwell times, cycle counts, sharpen backlog, refill forecast)
 - ✅ Search functionality by S-number, set, or cam
 - ✅ Job and tool management interface
-- ✅ Bulk CAM item creation
-- ✅ Data export (CSV and SQLite database download)
+- ✅ Bulk CAM item creation with die position configuration
+- ✅ Data export (CSV and SQLite database download) and database import/restore
+- ✅ PIN-based user authentication with role-based access (admin/user)
+- ✅ Tool lifespan tracking with material removal and refill forecasting
+- ✅ Batch move operations (up to 50 items per request)
+- ✅ Rate limiting and input validation
+- ✅ SQLite connection pooling and TTL caching for performance
 - ✅ Offline-first: everything runs locally, no internet required
 
-### Phase 2/3 Future Additions:
+### Future Additions:
 - QR code scanning via keyboard-wedge input (hardware already supported)
 - Multi-kiosk synchronization (if needed)
-- User authentication and operator tracking
-- Advanced analytics and reporting
-- Die steel tracking and lifecycle management
 - Email/SMS alerts for urgent priority jobs
 - Historical trend analysis and forecasting
 
@@ -117,6 +119,12 @@ export CAM_DB_PATH="./cam_tracking.db"
 # Auto-bump feature (can also be toggled in Admin UI)
 export AUTO_BUMP_ENABLED="false"
 
+# Default material life for tool lifespans (inches)
+export DEFAULT_MATERIAL_LIFE="0.375"
+
+# Session duration (hours, default: 8-hour shift)
+export SESSION_DURATION_HOURS="8"
+
 # Server settings
 export HOST="0.0.0.0"
 export PORT="8000"
@@ -125,6 +133,7 @@ export PORT="8000"
 ### Runtime Configuration:
 The **Admin** page provides a UI to toggle:
 - **Auto-Bump**: When moving a tool to Active, automatically move any existing Active tool from the same job+set to Sharpen
+- **Default Material Life**: Default max material life for new tool lifespans
 
 ## Running on Raspberry Pi Kiosk Mode
 
@@ -219,30 +228,41 @@ sudo systemctl start cam-tracking
 - **Cycle Counts**: Most-used tools (moves into Active)
 - Auto-refreshes every 60 seconds
 
-### Admin Screen
-- **Configuration**: Toggle auto-bump feature
+### Admin Screen (requires admin login)
+- **Configuration**: Toggle auto-bump, set default material life
+- **User Management**: Create, edit, deactivate users and assign roles
 - **Create Job**: Add new production jobs (S-numbers)
-- **Bulk Create CAM Items**: Generate sets and cams for a job quickly
-- **Export Data**: Download CSV files or entire database backup
-- **Jobs List**: View all jobs in system
+- **Bulk Create CAM Items**: Generate sets and cams with die position configuration
+- **Export/Import Data**: Download CSV files, database backup, or restore from backup
+- **Jobs List**: View and manage all jobs in system
 
 ## Data Model
 
 ### Tables:
 
+**users**
+- `username`: Unique login identifier
+- `display_name`: Name shown in UI and audit log
+- `pin_hash`: Hashed PIN for authentication
+- `role`: `admin` or `user`
+- `active`: Whether the account is active
+
 **jobs**
 - `s_number`: Production job identifier (e.g., "1793")
 - `title`: Optional job description
-- `priority_base`: Base priority (0-10)
+- `priority_level`: Categorical priority (low, medium, high, urgent, top)
+- `notes`: Optional notes
 - `created_at`: When job was added
 
 **cam_items**
 - `job_id`: Foreign key to jobs
 - `set_no`: Set number (1, 2, 3...)
 - `cam_no`: CAM number within set (1, 2, 3, 4...)
+- `die_position`: Optional (upper/lower)
 - `status_station`: Current station (active, sharpen, cabinet, refill)
 - `status_updated_at`: Last move timestamp
 - `enter_die_steel`, `exit_die_steel`: Optional die steel specs
+- `max_material_life`: Maximum material life in inches (default 0.375)
 - `notes`: Optional notes
 - `eol_cycles_expected`: Expected end-of-life cycles
 
@@ -251,9 +271,23 @@ sudo systemctl start cam-tracking
 - `from_station`: Previous station
 - `to_station`: New station
 - `moved_at`: Timestamp
-- `operator`: Who made the move (default: "kiosk")
+- `operator`: Who made the move (logged-in user's display name)
+- `material_removed`: Inches removed (for sharpen→cabinet moves)
 - `undone`: Boolean flag if move was undone
 - `notes`: Optional move notes
+
+**tool_lifespans**
+- `cam_item_id`: Foreign key to cam_items
+- `lifespan_number`: Sequential lifespan count
+- `max_material_life`: Maximum material for this lifespan
+- `total_material_removed`: Cumulative material removed
+- `sharpen_count`: Number of sharpen cycles in this lifespan
+- `started_at`, `ended_at`: Lifespan date range
+
+**sessions**
+- `token`: Bearer token for API authentication
+- `user_id`: Foreign key to users
+- `expires_at`: Session expiry time
 
 ### Manual Entry Parsing:
 The system accepts multiple formats:
@@ -268,19 +302,49 @@ The system accepts multiple formats:
 
 See `main.py` for full FastAPI documentation.
 
-Key endpoints:
-- `GET /api/jobs` - List all jobs
-- `POST /api/jobs` - Create job
+### Authentication:
+- `POST /api/auth/login` - Log in with PIN, returns Bearer token
+- `POST /api/auth/logout` - Invalidate session
+- `GET /api/auth/me` - Get current user info
+
+### User Management (admin only):
+- `GET /api/users` - List all users
+- `POST /api/users` - Create user
+- `PATCH /api/users/{id}` - Update user
+- `DELETE /api/users/{id}` - Deactivate user
+
+### Jobs & CAM Items:
+- `GET /api/jobs` - List jobs (paginated)
+- `POST /api/jobs` - Create job (admin)
 - `GET /api/jobs/{id}` - Get job with cam items
-- `POST /api/cam-items` - Create single cam item
-- `POST /api/cam-items/bulk` - Bulk create cam items
+- `PATCH /api/jobs/{id}` - Update job (admin)
+- `DELETE /api/jobs/{id}` - Delete job (admin)
+- `GET /api/cam-items` - List cam items (filterable, paginated)
+- `POST /api/cam-items` - Create single cam item (admin)
+- `POST /api/cam-items/bulk` - Bulk create cam items (admin)
+- `PATCH /api/cam-items/{id}` - Update cam item (admin)
 - `POST /api/resolve-entry` - Parse manual entry string
-- `POST /api/moves` - Move cam to station
-- `POST /api/moves/undo/{cam_item_id}` - Undo last move
-- `GET /api/hot-list` - Get priority queue
+
+### Moves:
+- `POST /api/moves` - Move cam to station (requires login)
+- `POST /api/moves/batch` - Batch move up to 50 items (requires login)
+- `POST /api/moves/undo/{cam_item_id}` - Undo last move (requires login)
+- `GET /api/moves` - List recent moves
+
+### Analytics & Data:
+- `GET /api/hot-list` - Priority queue (cached)
 - `GET /api/search?q=...` - Search jobs and tools
-- `GET /api/analytics/*` - Various analytics endpoints
-- `GET /api/export/*` - CSV and database exports
+- `GET /api/analytics/station-counts` - Station distribution (cached)
+- `GET /api/analytics/moves-recent` - Recent move activity
+- `GET /api/analytics/dwell-times` - Average dwell times
+- `GET /api/analytics/cycle-counts` - Cycle counts per tool
+- `GET /api/analytics/sharpen-backlog` - Sharpen backlog stats
+- `GET /api/analytics/refill-forecast` - Tools approaching refill
+- `GET /api/cam-items/{id}/lifespan` - Lifespan forecast for a tool
+- `GET /api/cam-items/{id}/sharpen-stats` - Sharpen history stats
+- `GET /api/export/*` - CSV and database exports (requires login)
+- `POST /api/import/database` - Database restore (admin)
+- `GET /health` - Health check endpoint
 
 ## Troubleshooting
 
@@ -338,15 +402,22 @@ Database schema migrations are backward compatible in Phase 1.
 ### Project Structure:
 ```
 cam-tracking/
-├── main.py                  # FastAPI application
-├── database.py              # Schema and DB initialization
+├── main.py                  # FastAPI application (endpoints, auth, caching)
+├── database.py              # Schema, migrations, connection pooling
 ├── config.py                # Configuration settings
 ├── entry_parser.py          # Manual entry parsing logic
-├── business_logic.py        # Move operations, priority calculation
+├── business_logic.py        # Move operations, priority, lifespan tracking
 ├── seed_data.py             # Test data generator
 ├── requirements.txt         # Python dependencies
 ├── start_kiosk.sh          # Startup script for Pi
 ├── README.md               # This file
+├── TESTING.md              # Test guide
+├── QUICKSTART.md           # Quick start guide
+├── tests/                  # Test suite (82 tests)
+│   ├── conftest.py         # Shared fixtures
+│   ├── test_entry_parser.py
+│   ├── test_database.py
+│   └── test_api.py
 └── static/                 # Frontend
     ├── css/
     │   └── styles.css
@@ -362,14 +433,10 @@ cam-tracking/
 
 ### Running Tests:
 ```bash
-# Initialize test database
-CAM_DB_PATH=test.db python3 database.py
-CAM_DB_PATH=test.db python3 seed_data.py
+# Run all 82 tests
+pytest tests/ -v
 
-# Start test server
-CAM_DB_PATH=test.db python3 main.py
-
-# Access at http://localhost:8000
+# See TESTING.md for detailed test guide
 ```
 
 ### Adding New Features:
@@ -388,5 +455,5 @@ For issues or questions, contact the engineering team.
 
 ---
 
-**Version**: Phase 1 (v1.0)
-**Last Updated**: 2026-01-15
+**Version**: Phase 1 (v1.2)
+**Last Updated**: 2026-02-14
