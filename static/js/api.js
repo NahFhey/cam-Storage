@@ -236,6 +236,13 @@ async function undoMove(camItemId) {
     });
 }
 
+async function batchMoveCams(moves, autoBump = null) {
+    return apiCall('/moves/batch', {
+        method: 'POST',
+        body: JSON.stringify({ moves, auto_bump: autoBump })
+    });
+}
+
 async function getMoves(filters = {}) {
     const params = new URLSearchParams(filters);
     return apiCall(`/moves?${params}`);

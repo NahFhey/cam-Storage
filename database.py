@@ -2,6 +2,7 @@
 Database schema and initialization for CAM Tracking Kiosk
 """
 import sqlite3
+import asyncio
 import aiosqlite
 import hashlib
 import secrets
@@ -12,6 +13,80 @@ import config
 
 # Set up logger
 logger = logging.getLogger(__name__)
+
+# ========== Connection Pool ==========
+
+class ConnectionPool:
+    """Simple async SQLite connection pool to avoid per-request connection overhead."""
+
+    def __init__(self, db_path: str, max_size: int = 5):
+        self._db_path = db_path
+        self._max_size = max_size
+        self._pool: asyncio.Queue = asyncio.Queue(maxsize=max_size)
+        self._size = 0
+        self._lock = asyncio.Lock()
+
+    async def _create_connection(self) -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(self._db_path)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    async def acquire(self) -> aiosqlite.Connection:
+        # Try to get an existing connection from the pool
+        try:
+            conn = self._pool.get_nowait()
+            # Verify the connection is still usable
+            try:
+                await conn.execute("SELECT 1")
+                return conn
+            except Exception:
+                async with self._lock:
+                    self._size -= 1
+        except asyncio.QueueEmpty:
+            pass
+
+        # Create a new connection if under limit
+        async with self._lock:
+            if self._size < self._max_size:
+                self._size += 1
+                return await self._create_connection()
+
+        # Pool exhausted — wait for a connection to be released
+        conn = await self._pool.get()
+        try:
+            await conn.execute("SELECT 1")
+            return conn
+        except Exception:
+            async with self._lock:
+                self._size -= 1
+            return await self._create_connection()
+
+    async def release(self, conn: aiosqlite.Connection):
+        try:
+            self._pool.put_nowait(conn)
+        except asyncio.QueueFull:
+            await conn.close()
+            async with self._lock:
+                self._size -= 1
+
+    async def close_all(self):
+        while not self._pool.empty():
+            conn = self._pool.get_nowait()
+            await conn.close()
+        async with self._lock:
+            self._size = 0
+
+
+# Global pool instance (initialized lazily)
+_pool: Optional[ConnectionPool] = None
+
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(config.DATABASE_PATH, max_size=5)
+    return _pool
 
 # SQL schema definition
 SCHEMA_SQL = """
@@ -51,6 +126,8 @@ CREATE INDEX IF NOT EXISTS idx_cam_items_job ON cam_items(job_id);
 CREATE INDEX IF NOT EXISTS idx_cam_items_station ON cam_items(status_station);
 CREATE INDEX IF NOT EXISTS idx_cam_items_updated ON cam_items(status_updated_at);
 CREATE INDEX IF NOT EXISTS idx_cam_items_die_position ON cam_items(die_position);
+CREATE INDEX IF NOT EXISTS idx_cam_items_set_cam ON cam_items(job_id, set_no, cam_no);
+CREATE INDEX IF NOT EXISTS idx_cam_items_auto_bump ON cam_items(job_id, die_position, status_station);
 
 -- Moves table: immutable audit log of all station changes
 CREATE TABLE IF NOT EXISTS moves (
@@ -110,6 +187,19 @@ CREATE TABLE IF NOT EXISTS tool_lifespans (
 CREATE INDEX IF NOT EXISTS idx_tool_lifespans_cam_item ON tool_lifespans(cam_item_id);
 CREATE INDEX IF NOT EXISTS idx_tool_lifespans_active ON tool_lifespans(cam_item_id, ended_at);
 
+-- Sessions table: persistent session storage (survives restarts)
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
 -- Insert default config values
 INSERT OR IGNORE INTO config (key, value) VALUES ('auto_bump_enabled', 'true');
 INSERT OR IGNORE INTO config (key, value) VALUES ('default_operator', 'kiosk');
@@ -131,12 +221,13 @@ def init_database(db_path: str = None):
     logger.info(f"Database initialized at {db_path}")
 
 async def get_db():
-    """Get async database connection (for FastAPI dependency injection)"""
-    async with aiosqlite.connect(config.DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        # foreign_keys must be set per-connection; WAL mode persists on the file
-        await db.execute("PRAGMA foreign_keys = ON")
-        yield db
+    """Get async database connection from pool (for FastAPI dependency injection)"""
+    pool = _get_pool()
+    conn = await pool.acquire()
+    try:
+        yield conn
+    finally:
+        await pool.release(conn)
 
 @asynccontextmanager
 async def get_db_connection():
@@ -311,6 +402,28 @@ def migrate_database(db_path: str = None):
 
     # Insert default_material_life config if missing
     cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('default_material_life', '0.375')")
+
+    # Ensure composite indices exist (idempotent — safe to re-run)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cam_items_set_cam ON cam_items(job_id, set_no, cam_no)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cam_items_auto_bump ON cam_items(job_id, die_position, status_station)")
+
+    # Check if sessions table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+    if not cursor.fetchone():
+        logger.info("  Creating sessions table...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
+        logger.info("    Created sessions table")
 
     # Backfill lifespan data for existing cam_items if table was just created
     if not lifespans_existed:

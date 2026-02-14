@@ -127,7 +127,7 @@ async def resolve_entry(db, entry: str) -> Dict:
 
     # Look up job by S-number (match with or without S prefix)
     cursor = await db.execute(
-        "SELECT * FROM jobs WHERE s_number = ? OR s_number = ? OR s_number = ?",
+        "SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE s_number = ? OR s_number = ? OR s_number = ?",
         (parsed.s_number, f"S{parsed.s_number}", parsed.s_number.lstrip("S"))
     )
     job = await cursor.fetchone()
@@ -145,7 +145,9 @@ async def resolve_entry(db, entry: str) -> Dict:
     if parsed.set_no is not None and parsed.cam_no is not None:
         cursor = await db.execute(
             """
-            SELECT * FROM cam_items
+            SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+                   status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+            FROM cam_items
             WHERE job_id = ? AND set_no = ? AND cam_no = ?
             """,
             (job['id'], parsed.set_no, parsed.cam_no)
@@ -171,7 +173,9 @@ async def resolve_entry(db, entry: str) -> Dict:
     if parsed.set_no is not None:
         cursor = await db.execute(
             """
-            SELECT * FROM cam_items
+            SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+                   status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+            FROM cam_items
             WHERE job_id = ? AND set_no = ?
             ORDER BY cam_no
             """,
@@ -199,7 +203,9 @@ async def resolve_entry(db, entry: str) -> Dict:
     if parsed.cam_no is not None:
         cursor = await db.execute(
             """
-            SELECT * FROM cam_items
+            SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+                   status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+            FROM cam_items
             WHERE job_id = ? AND cam_no = ?
             ORDER BY set_no
             """,
@@ -226,7 +232,9 @@ async def resolve_entry(db, entry: str) -> Dict:
     # Just S-number, return all cam items for this job
     cursor = await db.execute(
         """
-        SELECT * FROM cam_items
+        SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+               status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+        FROM cam_items
         WHERE job_id = ?
         ORDER BY set_no, cam_no
         """,

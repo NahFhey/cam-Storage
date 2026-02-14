@@ -5,10 +5,13 @@ Business logic for CAM tracking operations:
 - Priority calculation
 - Hot list generation
 """
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import config
 from database import get_config_value
+
+logger = logging.getLogger(__name__)
 
 async def move_cam_to_station(
     db,
@@ -41,7 +44,7 @@ async def move_cam_to_station(
 
     # Get current cam item state
     cursor = await db.execute(
-        "SELECT * FROM cam_items WHERE id = ?",
+        "SELECT id, job_id, set_no, cam_no, die_position, status_station FROM cam_items WHERE id = ?",
         (cam_item_id,)
     )
     cam_item = await cursor.fetchone()
@@ -67,7 +70,7 @@ async def move_cam_to_station(
         if cam_item['die_position']:
             cursor = await db.execute(
                 """
-                SELECT * FROM cam_items
+                SELECT id, set_no, cam_no FROM cam_items
                 WHERE job_id = ?
                   AND set_no != ?
                   AND die_position = ?
@@ -133,7 +136,7 @@ async def move_cam_to_station(
     )
     move_id = cursor.lastrowid
 
-    # Lifespan tracking hooks (non-blocking: move succeeds even if lifespan tracking fails)
+    # Lifespan tracking — atomic with the move (rolled back together on failure)
     try:
         if from_station == 'sharpen' and to_station == 'cabinet' and material_removed:
             await update_lifespan_on_sharpen(db, cam_item_id, material_removed)
@@ -142,8 +145,9 @@ async def move_cam_to_station(
         if from_station == 'refill' and to_station != 'refill':
             await open_new_lifespan(db, cam_item_id)
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Lifespan tracking failed for cam {cam_item_id}: {e}")
+        await db.rollback()
+        logger.error(f"Move+lifespan transaction failed for cam {cam_item_id}: {e}")
+        raise ValueError(f"Move failed due to lifespan tracking error: {e}")
 
     await db.commit()
 
@@ -173,7 +177,8 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
     # Get the most recent non-undone move for this cam
     cursor = await db.execute(
         """
-        SELECT * FROM moves
+        SELECT id, cam_item_id, from_station, to_station, moved_at, operator, notes, material_removed, undone
+        FROM moves
         WHERE cam_item_id = ? AND undone = 0
         ORDER BY moved_at DESC, id DESC
         LIMIT 1
@@ -260,8 +265,7 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
                 (cam_item_id, cam_item_id)
             )
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Lifespan undo tracking failed for cam {cam_item_id}: {e}")
+        logger.error(f"Lifespan undo tracking failed for cam {cam_item_id}: {e}")
 
     await db.commit()
 
@@ -451,7 +455,9 @@ async def generate_hot_list(db) -> List[Dict]:
 async def get_active_lifespan(db, cam_item_id: int) -> Optional[Dict]:
     """Get the current active lifespan for a tool (ended_at IS NULL)."""
     cursor = await db.execute(
-        """SELECT * FROM tool_lifespans
+        """SELECT id, cam_item_id, lifespan_number, started_at, ended_at,
+               total_material_removed, sharpen_count, max_material_life
+        FROM tool_lifespans
            WHERE cam_item_id = ? AND ended_at IS NULL
            ORDER BY lifespan_number DESC LIMIT 1""",
         (cam_item_id,)

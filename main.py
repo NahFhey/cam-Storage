@@ -20,10 +20,46 @@ import sys
 import secrets
 import os
 
+import time
 import config
 from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin
 from entry_parser import parse_manual_entry, resolve_entry
 from business_logic import move_cam_to_station, undo_last_move, generate_hot_list, get_lifespan_forecast
+
+
+# ========== Simple TTL Cache ==========
+
+class TTLCache:
+    """Simple in-memory cache with time-to-live expiry."""
+
+    def __init__(self, default_ttl: int = 30):
+        self._cache: Dict[str, dict] = {}
+        self._default_ttl = default_ttl
+
+    def get(self, key: str):
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        if time.monotonic() > entry["expires"]:
+            del self._cache[key]
+            return None
+        return entry["value"]
+
+    def set(self, key: str, value, ttl: int = None):
+        self._cache[key] = {
+            "value": value,
+            "expires": time.monotonic() + (ttl or self._default_ttl)
+        }
+
+    def invalidate(self, key: str = None):
+        if key is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(key, None)
+
+
+# Global cache instance (30-second TTL — suitable for shop floor refresh rates)
+_cache = TTLCache(default_ttl=30)
 
 # Configure logging
 logging.basicConfig(
@@ -52,48 +88,54 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ========== Session Management ==========
-
-# In-memory session store: token -> user session dict
-active_sessions: Dict[str, dict] = {}
+# ========== Session Management (Database-backed) ==========
 
 
-def create_session(user: dict) -> str:
+async def create_session(db, user: dict) -> str:
     """Create a new session for a user and return the token"""
     token = secrets.token_urlsafe(32)
-    active_sessions[token] = {
-        "user_id": user["id"],
-        "username": user["username"],
-        "display_name": user["display_name"],
-        "role": user["role"],
-        "expires_at": (datetime.now() + timedelta(hours=config.SESSION_DURATION_HOURS)).isoformat()
-    }
+    expires_at = (datetime.now() + timedelta(hours=config.SESSION_DURATION_HOURS)).isoformat()
+    await db.execute(
+        """INSERT INTO sessions (token, user_id, username, display_name, role, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (token, user["id"], user["username"], user["display_name"], user["role"], expires_at)
+    )
+    await db.commit()
     return token
 
 
-def get_session(token: str) -> Optional[dict]:
+async def get_session(db, token: str) -> Optional[dict]:
     """Get a valid session by token, or None if expired/missing"""
-    session = active_sessions.get(token)
-    if not session:
+    cursor = await db.execute(
+        "SELECT user_id, username, display_name, role, expires_at FROM sessions WHERE token = ?",
+        (token,)
+    )
+    row = await cursor.fetchone()
+    if not row:
         return None
+    session = dict(row)
     if datetime.fromisoformat(session["expires_at"]) <= datetime.now():
-        del active_sessions[token]
+        await db.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        await db.commit()
         return None
     return session
 
 
-def cleanup_sessions():
+async def cleanup_sessions(db):
     """Remove expired sessions"""
-    now = datetime.now()
-    expired = [t for t, s in active_sessions.items()
-               if datetime.fromisoformat(s["expires_at"]) <= now]
-    for t in expired:
-        del active_sessions[t]
+    await db.execute("DELETE FROM sessions WHERE expires_at <= ?", (datetime.now().isoformat(),))
+    await db.commit()
+
+
+async def invalidate_user_sessions(db, user_id: int):
+    """Invalidate all sessions for a specific user"""
+    await db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    await db.commit()
 
 
 # ========== Auth Dependencies ==========
 
-async def get_current_user(request: Request) -> dict:
+async def get_current_user(request: Request, db: aiosqlite.Connection = Depends(get_db)) -> dict:
     """Get the current authenticated user from the session token."""
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -102,7 +144,7 @@ async def get_current_user(request: Request) -> dict:
             detail="Not authenticated"
         )
     token = auth_header[7:]
-    session = get_session(token)
+    session = await get_session(db, token)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -258,6 +300,23 @@ class MoveRequest(BaseModel):
             raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
         return v
 
+class BatchMoveItem(BaseModel):
+    cam_item_id: int = Field(..., gt=0)
+    to_station: str = Field(..., description="Destination station")
+    notes: Optional[str] = Field(None, max_length=500)
+    material_removed: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+    @field_validator('to_station')
+    @classmethod
+    def validate_station(cls, v):
+        if v not in config.STATIONS:
+            raise ValueError(f'Station must be one of: {", ".join(config.STATIONS)}')
+        return v
+
+class BatchMoveRequest(BaseModel):
+    moves: List[BatchMoveItem] = Field(..., min_length=1, max_length=50, description="List of moves to execute")
+    auto_bump: Optional[bool] = None
+
 class EntryResolveRequest(BaseModel):
     entry: str = Field(..., min_length=1, max_length=100, description="Manual entry string")
 
@@ -362,7 +421,7 @@ async def health_check(db: aiosqlite.Connection = Depends(get_db)):
 @limiter.limit("20/minute")
 async def login(request: Request, login_req: LoginRequest, db: aiosqlite.Connection = Depends(get_db)):
     """Log in by PIN only. The system matches the PIN to a user."""
-    cleanup_sessions()
+    await cleanup_sessions(db)
 
     cursor = await db.execute(
         "SELECT id, username, display_name, pin_hash, role FROM users WHERE active = 1"
@@ -372,7 +431,7 @@ async def login(request: Request, login_req: LoginRequest, db: aiosqlite.Connect
     for user in users:
         if verify_pin(login_req.pin, user["pin_hash"]):
             user_dict = dict(user)
-            token = create_session(user_dict)
+            token = await create_session(db, user_dict)
             logger.info(f"User '{user_dict['username']}' logged in successfully")
             return {
                 "token": token,
@@ -392,14 +451,17 @@ async def login(request: Request, login_req: LoginRequest, db: aiosqlite.Connect
 
 
 @app.post("/api/auth/logout")
-async def logout(request: Request):
+async def logout(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     """Log out and invalidate the session."""
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        if token in active_sessions:
-            session = active_sessions.pop(token)
-            logger.info(f"User '{session['username']}' logged out")
+        cursor = await db.execute("SELECT username FROM sessions WHERE token = ?", (token,))
+        row = await cursor.fetchone()
+        if row:
+            logger.info(f"User '{row['username']}' logged out")
+            await db.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            await db.commit()
     return {"success": True}
 
 
@@ -479,7 +541,7 @@ async def update_user(
 ):
     """Update a user (admin only)."""
     # Verify user exists
-    cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    cursor = await db.execute("SELECT id, username, display_name, role, active FROM users WHERE id = ?", (user_id,))
     existing_user = await cursor.fetchone()
     if not existing_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -525,11 +587,7 @@ async def update_user(
 
     # If deactivating, invalidate their sessions
     if user_data.active is False:
-        tokens_to_remove = [
-            t for t, s in active_sessions.items() if s["user_id"] == user_id
-        ]
-        for t in tokens_to_remove:
-            del active_sessions[t]
+        await invalidate_user_sessions(db, user_id)
 
     logger.info(f"Admin '{admin['username']}' updated user id={user_id}")
 
@@ -564,11 +622,7 @@ async def delete_user(
     await db.commit()
 
     # Invalidate their sessions
-    tokens_to_remove = [
-        t for t, s in active_sessions.items() if s["user_id"] == user_id
-    ]
-    for t in tokens_to_remove:
-        del active_sessions[t]
+    await invalidate_user_sessions(db, user_id)
 
     logger.info(f"Admin '{admin['username']}' deactivated user '{user['username']}'")
     return {"success": True, "message": f"User '{user['username']}' deactivated"}
@@ -603,7 +657,7 @@ async def list_jobs(
 
     # Get paginated results
     cursor = await db.execute(
-        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        "SELECT id, s_number, title, priority_level, created_at, notes FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
         (limit, skip)
     )
     jobs = await cursor.fetchall()
@@ -619,7 +673,7 @@ async def list_jobs(
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
     """Get a specific job with its cam items"""
-    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    cursor = await db.execute("SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE id = ?", (job_id,))
     job = await cursor.fetchone()
 
     if not job:
@@ -628,7 +682,9 @@ async def get_job(job_id: int, db: aiosqlite.Connection = Depends(get_db)):
     # Get cam items for this job
     cursor = await db.execute(
         """
-        SELECT * FROM cam_items
+        SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+               status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+        FROM cam_items
         WHERE job_id = ?
         ORDER BY set_no, cam_no
         """,
@@ -661,7 +717,7 @@ async def create_job(
         await db.commit()
         job_id = cursor.lastrowid
 
-        cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        cursor = await db.execute("SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE id = ?", (job_id,))
         new_job = await cursor.fetchone()
         return dict(new_job)
     except aiosqlite.IntegrityError:
@@ -703,7 +759,7 @@ async def update_job(
     await db.execute(query, values)
     await db.commit()
 
-    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    cursor = await db.execute("SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE id = ?", (job_id,))
     updated_job = await cursor.fetchone()
     return dict(updated_job)
 
@@ -771,7 +827,9 @@ async def list_cam_items(
     total = (await cursor.fetchone())['count']
 
     # Get paginated results
-    query = f"SELECT * FROM cam_items WHERE {where_sql} ORDER BY status_updated_at DESC LIMIT ? OFFSET ?"
+    query = f"""SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+               status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+        FROM cam_items WHERE {where_sql} ORDER BY status_updated_at DESC LIMIT ? OFFSET ?"""
     cursor = await db.execute(query, params + [limit, skip])
     items = await cursor.fetchall()
 
@@ -787,7 +845,12 @@ async def list_cam_items(
 @app.get("/api/cam-items/{cam_item_id}")
 async def get_cam_item(cam_item_id: int, db: aiosqlite.Connection = Depends(get_db)):
     """Get a specific cam item with its move history"""
-    cursor = await db.execute("SELECT * FROM cam_items WHERE id = ?", (cam_item_id,))
+    cursor = await db.execute(
+        """SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+               status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+        FROM cam_items WHERE id = ?""",
+        (cam_item_id,)
+    )
     cam_item = await cursor.fetchone()
 
     if not cam_item:
@@ -796,7 +859,8 @@ async def get_cam_item(cam_item_id: int, db: aiosqlite.Connection = Depends(get_
     # Get move history
     cursor = await db.execute(
         """
-        SELECT * FROM moves
+        SELECT id, cam_item_id, from_station, to_station, moved_at, operator, notes, material_removed, undone
+        FROM moves
         WHERE cam_item_id = ?
         ORDER BY moved_at DESC
         """,
@@ -805,7 +869,7 @@ async def get_cam_item(cam_item_id: int, db: aiosqlite.Connection = Depends(get_
     moves = await cursor.fetchall()
 
     # Get job info
-    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (cam_item['job_id'],))
+    cursor = await db.execute("SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE id = ?", (cam_item['job_id'],))
     job = await cursor.fetchone()
 
     return {
@@ -859,7 +923,12 @@ async def create_cam_item(
         )
         await db.commit()
 
-        cursor = await db.execute("SELECT * FROM cam_items WHERE id = ?", (cam_item_id,))
+        cursor = await db.execute(
+            """SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+                   status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+            FROM cam_items WHERE id = ?""",
+            (cam_item_id,)
+        )
         new_item = await cursor.fetchone()
         return dict(new_item)
     except aiosqlite.IntegrityError:
@@ -918,7 +987,12 @@ async def update_cam_item(
     await db.execute(query, values)
     await db.commit()
 
-    cursor = await db.execute("SELECT * FROM cam_items WHERE id = ?", (cam_item_id,))
+    cursor = await db.execute(
+        """SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
+               status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
+        FROM cam_items WHERE id = ?""",
+        (cam_item_id,)
+    )
     updated_item = await cursor.fetchone()
     return dict(updated_item)
 
@@ -1079,6 +1153,7 @@ async def move_cam(
             auto_bump=move.auto_bump,
             material_removed=move.material_removed
         )
+        _cache.invalidate()  # Data changed — clear cached analytics
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1097,9 +1172,69 @@ async def undo_move(
     """Undo the last move for a cam item (requires login)"""
     try:
         result = await undo_last_move(db, cam_item_id)
+        _cache.invalidate()  # Data changed — clear cached analytics
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/moves/batch")
+@limiter.limit("50/minute")
+async def batch_move(
+    request: Request,
+    batch: BatchMoveRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Move multiple CAM items in a single request (requires login).
+
+    Processes each move sequentially. If one fails, previous successful
+    moves are preserved and the error is reported in the response.
+    """
+    operator = user["display_name"]
+    results = []
+    errors = []
+
+    for item in batch.moves:
+        try:
+            # Validate material_removed for sharpen->cabinet
+            cursor = await db.execute(
+                "SELECT status_station FROM cam_items WHERE id = ?",
+                (item.cam_item_id,)
+            )
+            cam = await cursor.fetchone()
+            if not cam:
+                errors.append({"cam_item_id": item.cam_item_id, "error": "CAM item not found"})
+                continue
+
+            if cam['status_station'] == 'sharpen' and item.to_station == 'cabinet':
+                if item.material_removed is None:
+                    errors.append({"cam_item_id": item.cam_item_id,
+                                   "error": "Material removed required for sharpen to cabinet"})
+                    continue
+
+            result = await move_cam_to_station(
+                db,
+                cam_item_id=item.cam_item_id,
+                to_station=item.to_station,
+                operator=operator,
+                notes=item.notes,
+                auto_bump=batch.auto_bump,
+                material_removed=item.material_removed
+            )
+            results.append(result)
+        except (ValueError, Exception) as e:
+            errors.append({"cam_item_id": item.cam_item_id, "error": str(e)})
+
+    if results:
+        _cache.invalidate()
+
+    return {
+        "success": len(errors) == 0,
+        "moved": len(results),
+        "failed": len(errors),
+        "results": results,
+        "errors": errors
+    }
 
 @app.get("/api/moves")
 async def list_moves(
@@ -1111,7 +1246,8 @@ async def list_moves(
     if cam_item_id:
         cursor = await db.execute(
             """
-            SELECT * FROM moves
+            SELECT id, cam_item_id, from_station, to_station, moved_at, operator, notes, material_removed, undone
+            FROM moves
             WHERE cam_item_id = ?
             ORDER BY moved_at DESC
             LIMIT ?
@@ -1121,7 +1257,9 @@ async def list_moves(
     else:
         cursor = await db.execute(
             """
-            SELECT m.*, c.job_id, c.set_no, c.cam_no
+            SELECT m.id, m.cam_item_id, m.from_station, m.to_station, m.moved_at,
+                   m.operator, m.notes, m.material_removed, m.undone,
+                   c.job_id, c.set_no, c.cam_no
             FROM moves m
             JOIN cam_items c ON m.cam_item_id = c.id
             ORDER BY m.moved_at DESC
@@ -1180,8 +1318,12 @@ async def get_cam_lifespan(cam_item_id: int, db: aiosqlite.Connection = Depends(
 
 @app.get("/api/hot-list")
 async def get_hot_list(db: aiosqlite.Connection = Depends(get_db)):
-    """Get the priority hot list"""
+    """Get the priority hot list (cached for 30s)"""
+    cached = _cache.get("hot_list")
+    if cached is not None:
+        return cached
     hot_list = await generate_hot_list(db)
+    _cache.set("hot_list", hot_list)
     return hot_list
 
 # ========== Search Endpoint ==========
@@ -1202,7 +1344,8 @@ async def search(
     # Search jobs (match against both raw input and stripped S-number)
     cursor = await db.execute(
         """
-        SELECT * FROM jobs
+        SELECT id, s_number, title, priority_level, created_at, notes
+        FROM jobs
         WHERE s_number LIKE ? OR s_number LIKE ? OR title LIKE ?
         ORDER BY s_number
         """,
@@ -1231,7 +1374,10 @@ async def search(
 
 @app.get("/api/analytics/station-counts")
 async def analytics_station_counts(db: aiosqlite.Connection = Depends(get_db)):
-    """Get counts of tools by station"""
+    """Get counts of tools by station (cached for 30s)"""
+    cached = _cache.get("station_counts")
+    if cached is not None:
+        return cached
     cursor = await db.execute(
         """
         SELECT
@@ -1249,7 +1395,9 @@ async def analytics_station_counts(db: aiosqlite.Connection = Depends(get_db)):
         """
     )
     counts = await cursor.fetchall()
-    return [dict(c) for c in counts]
+    result = [dict(c) for c in counts]
+    _cache.set("station_counts", result)
+    return result
 
 @app.get("/api/analytics/moves-recent")
 async def analytics_moves_recent(days: int = 7, db: aiosqlite.Connection = Depends(get_db)):
@@ -1403,7 +1551,7 @@ async def export_jobs_csv(
         writer.writerow(['id', 's_number', 'title', 'priority_level', 'created_at', 'notes'])
         yield output.getvalue()
 
-        cursor = await db.execute("SELECT * FROM jobs ORDER BY s_number")
+        cursor = await db.execute("SELECT id, s_number, title, priority_level, created_at, notes FROM jobs ORDER BY s_number")
         while True:
             rows = await cursor.fetchmany(500)
             if not rows:
@@ -1440,7 +1588,9 @@ async def export_cam_items_csv(
 
         cursor = await db.execute(
             """
-            SELECT c.*, j.s_number
+            SELECT c.id, c.job_id, c.set_no, c.cam_no, c.die_position, c.enter_die_steel,
+                   c.exit_die_steel, c.status_station, c.status_updated_at, c.notes,
+                   c.eol_cycles_expected, c.max_material_life, c.created_at, j.s_number
             FROM cam_items c
             JOIN jobs j ON c.job_id = j.id
             ORDER BY j.s_number, c.set_no, c.cam_no
@@ -1484,7 +1634,9 @@ async def export_moves_csv(
 
         cursor = await db.execute(
             """
-            SELECT m.*, j.s_number, c.set_no, c.cam_no
+            SELECT m.id, m.cam_item_id, m.from_station, m.to_station, m.moved_at,
+                   m.operator, m.notes, m.material_removed, m.undone,
+                   j.s_number, c.set_no, c.cam_no
             FROM moves m
             JOIN cam_items c ON m.cam_item_id = c.id
             JOIN jobs j ON c.job_id = j.id
@@ -1617,8 +1769,7 @@ async def import_database(
             logger.warning(f"Admin '{admin_user['username']}' replacing database file — active connections will be invalidated")
             shutil.move(temp_path, config.DATABASE_PATH)
 
-            # Invalidate all sessions since user data may have changed
-            active_sessions.clear()
+            # Sessions are in the replaced database — they'll be cleared naturally
 
             logger.info(f"Database imported successfully by admin '{admin_user['username']}'. Jobs: {jobs_count}, CAMs: {cam_items_count}, Moves: {moves_count}")
 
