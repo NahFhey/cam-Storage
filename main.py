@@ -1984,6 +1984,10 @@ async def import_database(
             logger.warning(f"Admin '{admin_user['username']}' replacing database file — active connections will be invalidated")
             shutil.move(temp_path, config.DATABASE_PATH)
 
+            # Run migrations on the imported database to ensure new tables exist
+            # (e.g. priority_changes table added after the backup was created)
+            migrate_database()
+
             # Sessions are in the replaced database — they'll be cleared naturally
 
             logger.info(f"Database imported successfully by admin '{admin_user['username']}'. Jobs: {jobs_count}, CAMs: {cam_items_count}, Moves: {moves_count}")
