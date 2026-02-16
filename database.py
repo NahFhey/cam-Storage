@@ -88,6 +88,18 @@ def _get_pool() -> ConnectionPool:
         _pool = ConnectionPool(config.DATABASE_PATH, max_size=5)
     return _pool
 
+
+async def reset_pool():
+    """Close all pooled connections and force new ones on next request.
+
+    Must be called after the database file is replaced (e.g. import)
+    so that stale connections to the old file are discarded.
+    """
+    global _pool
+    if _pool is not None:
+        await _pool.close_all()
+        _pool = None
+
 # SQL schema definition
 SCHEMA_SQL = """
 -- Jobs table: tracks production jobs by S-number

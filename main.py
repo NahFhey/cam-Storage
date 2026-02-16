@@ -22,7 +22,7 @@ import os
 
 import time
 import config
-from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin
+from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin, reset_pool
 from entry_parser import parse_manual_entry, resolve_entry
 from business_logic import move_cam_to_station, undo_last_move, generate_hot_list, get_lifespan_forecast
 
@@ -1983,6 +1983,9 @@ async def import_database(
             # after this operation. The frontend triggers a page reload to recover.
             logger.warning(f"Admin '{admin_user['username']}' replacing database file — active connections will be invalidated")
             shutil.move(temp_path, config.DATABASE_PATH)
+
+            # Flush the connection pool so stale connections to the old file are discarded
+            await reset_pool()
 
             # Run migrations on the imported database to ensure new tables exist
             # (e.g. priority_changes table added after the backup was created)
