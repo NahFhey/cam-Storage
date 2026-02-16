@@ -25,7 +25,7 @@ import time
 import config
 from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin, reset_pool
 from entry_parser import parse_manual_entry, resolve_entry
-from business_logic import move_cam_to_station, undo_last_move, generate_hot_list, get_lifespan_forecast
+from business_logic import move_cam_to_station, undo_last_move, generate_hot_list, generate_all_jobs_ranked, get_lifespan_forecast
 
 
 # ========== Simple TTL Cache ==========
@@ -1370,34 +1370,29 @@ async def get_top5(
     db: aiosqlite.Connection = Depends(get_db),
     admin_user: dict = Depends(get_admin_user)
 ):
-    """Get Top 5 priority jobs from the hot list, plus all jobs for swap candidates."""
-    cached = _cache.get("hot_list")
-    if cached is not None:
-        hot_list = cached
-    else:
-        hot_list = await generate_hot_list(db)
-        _cache.set("hot_list", hot_list)
+    """Get Top 5 priority jobs (all jobs eligible), plus all jobs for swap candidates."""
+    all_ranked = await generate_all_jobs_ranked(db)
 
     # Check for a manually saved order
     saved_order = await get_config_value("top5_order", db=db)
     if saved_order:
         try:
             ordered_ids = json.loads(saved_order)
-            hot_map = {item['job_id']: item for item in hot_list}
-            ordered = [hot_map[jid] for jid in ordered_ids if jid in hot_map]
-            # Fill remaining slots from hot list (for any new jobs not in saved order)
+            ranked_map = {item['job_id']: item for item in all_ranked}
+            ordered = [ranked_map[jid] for jid in ordered_ids if jid in ranked_map]
+            # Fill remaining slots from ranked list (for any new jobs not in saved order)
             seen = {item['job_id'] for item in ordered}
-            for item in hot_list:
+            for item in all_ranked:
                 if item['job_id'] not in seen and len(ordered) < 5:
                     ordered.append(item)
             top5 = ordered[:5]
         except (json.JSONDecodeError, KeyError):
-            top5 = hot_list[:5]
+            top5 = all_ranked[:5]
     else:
-        top5 = hot_list[:5]
+        top5 = all_ranked[:5]
 
     top5_ids = {item['job_id'] for item in top5}
-    remaining = [item for item in hot_list if item['job_id'] not in top5_ids]
+    remaining = [item for item in all_ranked if item['job_id'] not in top5_ids]
 
     cursor = await db.execute(
         "SELECT id, s_number, title, priority_level FROM jobs ORDER BY s_number"
@@ -1466,14 +1461,48 @@ async def reorder_top5(
     db: aiosqlite.Connection = Depends(get_db),
     admin_user: dict = Depends(get_admin_user)
 ):
-    """Save a manual ordering for the Top 5 jobs."""
+    """Save a manual ordering for the Top 5 jobs.
+
+    Priority is tied to position: #1=top, #2=urgent, #3=high, #4=medium, #5=low.
+    Automatically updates each job's priority_level and logs audit entries.
+    """
     if len(request_body.job_ids) > 5:
         raise HTTPException(status_code=400, detail="Maximum 5 jobs allowed")
 
+    POSITION_PRIORITIES = ['top', 'urgent', 'high', 'medium', 'low']
+
+    # Save the manual order
     await set_config_value("top5_order", json.dumps(request_body.job_ids), db=db)
+
+    # Update each job's priority based on its position
+    changes = []
+    for i, job_id in enumerate(request_body.job_ids):
+        new_priority = POSITION_PRIORITIES[i] if i < len(POSITION_PRIORITIES) else 'low'
+
+        cursor = await db.execute("SELECT priority_level FROM jobs WHERE id = ?", (job_id,))
+        row = await cursor.fetchone()
+        if not row:
+            continue
+        old_priority = row['priority_level'] or 'low'
+
+        if old_priority != new_priority:
+            await db.execute(
+                "UPDATE jobs SET priority_level = ? WHERE id = ?",
+                (new_priority, job_id)
+            )
+            await db.execute(
+                """INSERT INTO priority_changes
+                   (job_id, changed_by_user_id, changed_by_username, old_priority, new_priority, reason, source)
+                   VALUES (?, ?, ?, ?, ?, ?, 'top5')""",
+                (job_id, admin_user['user_id'], admin_user['username'],
+                 old_priority, new_priority, 'Reordered in Top 5')
+            )
+            changes.append({"job_id": job_id, "old": old_priority, "new": new_priority})
+
     await db.commit()
-    logger.info(f"Admin '{admin_user['username']}' reordered Top 5: {request_body.job_ids}")
-    return {"success": True, "order": request_body.job_ids}
+    _cache.invalidate()
+    logger.info(f"Admin '{admin_user['username']}' reordered Top 5: {request_body.job_ids} ({len(changes)} priority changes)")
+    return {"success": True, "order": request_body.job_ids, "priority_changes": changes}
 
 
 @app.get("/api/priority-changes")
