@@ -253,6 +253,27 @@ async function getHotList() {
     return apiCall('/hot-list');
 }
 
+// Top 5 Priority Management
+async function getTop5() {
+    return apiCall('/top5');
+}
+
+async function setTop5Priorities(jobs) {
+    return apiCall('/top5/set-priority', {
+        method: 'POST',
+        body: JSON.stringify({ jobs })
+    });
+}
+
+async function getPriorityChanges(filters = {}) {
+    const params = new URLSearchParams(filters);
+    return apiCall(`/priority-changes?${params}`);
+}
+
+async function getPriorityAnalytics(days = 30) {
+    return apiCall(`/priority-changes/analytics?days=${days}`);
+}
+
 // Search
 async function search(query) {
     const params = new URLSearchParams({ q: query });

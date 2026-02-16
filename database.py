@@ -200,6 +200,25 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
+-- Priority changes audit log: tracks every priority change with reason
+CREATE TABLE IF NOT EXISTS priority_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    changed_by_user_id INTEGER NOT NULL,
+    changed_by_username TEXT NOT NULL,
+    old_priority TEXT NOT NULL,
+    new_priority TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'all_jobs' CHECK(source IN ('all_jobs', 'top5')),
+    changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+    FOREIGN KEY (changed_by_user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_priority_changes_job ON priority_changes(job_id);
+CREATE INDEX IF NOT EXISTS idx_priority_changes_time ON priority_changes(changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_priority_changes_user ON priority_changes(changed_by_user_id);
+
 -- Insert default config values
 INSERT OR IGNORE INTO config (key, value) VALUES ('auto_bump_enabled', 'true');
 INSERT OR IGNORE INTO config (key, value) VALUES ('default_operator', 'kiosk');
@@ -492,6 +511,30 @@ def migrate_database(db_path: str = None):
                 backfill_count += 1
 
         logger.info(f"    Backfilled {backfill_count} lifespan records for {len(cam_ids)} cam items")
+
+    # Check if priority_changes table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='priority_changes'")
+    if not cursor.fetchone():
+        logger.info("  Creating priority_changes table...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS priority_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                changed_by_user_id INTEGER NOT NULL,
+                changed_by_username TEXT NOT NULL,
+                old_priority TEXT NOT NULL,
+                new_priority TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'all_jobs' CHECK(source IN ('all_jobs', 'top5')),
+                changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+                FOREIGN KEY (changed_by_user_id) REFERENCES users(id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_priority_changes_job ON priority_changes(job_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_priority_changes_time ON priority_changes(changed_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_priority_changes_user ON priority_changes(changed_by_user_id)")
+        logger.info("    Created priority_changes table")
 
     conn.commit()
 

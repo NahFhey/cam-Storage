@@ -105,7 +105,8 @@ class TestJobsAPI:
         # Update job
         response = client.patch(f"/api/jobs/{job_id}", json={
             "title": "Updated Title",
-            "priority_level": "urgent"
+            "priority_level": "urgent",
+            "reason": "Rush order from customer"
         }, headers=auth_headers)
         assert response.status_code == 200
         data = response.json()

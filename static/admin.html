@@ -19,6 +19,15 @@
     </nav>
 
     <div class="container">
+        <!-- Tab Bar -->
+        <div class="admin-tabs">
+            <button class="admin-tab active" data-tab="general">General</button>
+            <button class="admin-tab" data-tab="top5">Top 5</button>
+        </div>
+
+        <!-- General Tab -->
+        <div class="admin-tab-content active" id="tab-general">
+
         <!-- Configuration -->
         <div class="card">
             <h2 class="card-header">Configuration</h2>
@@ -211,6 +220,61 @@
             </div>
             <div id="jobsListContent"></div>
         </div>
+
+        </div><!-- /tab-general -->
+
+        <!-- Top 5 Tab -->
+        <div class="admin-tab-content" id="tab-top5">
+
+            <!-- Top 5 Priority Manager -->
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2 class="card-header" style="margin-bottom: 0;">Top 5 Priority Jobs</h2>
+                    <button id="refreshTop5Btn" class="btn btn-primary" style="padding: 0.5rem 1rem; min-height: auto;">Refresh</button>
+                </div>
+                <p style="color: var(--text-light); margin: 1rem 0;">
+                    The top 5 jobs from the Hot List, ranked by urgency. Override priorities or swap jobs in/out.
+                </p>
+                <div id="top5Alerts"></div>
+                <div id="top5Loading" class="spinner hidden"></div>
+                <div id="top5Content"></div>
+            </div>
+
+            <!-- Swap Job Panel -->
+            <div class="card" id="swapJobCard" style="display: none;">
+                <h2 class="card-header">Replace a Job in Top 5</h2>
+                <p style="color: var(--text-light); margin-bottom: 1rem;">Select a job to swap in:</p>
+                <input type="text" id="swapSearchInput" class="form-input" placeholder="Search by S-Number or title..." style="margin-bottom: 1rem;">
+                <div id="swapCandidates"></div>
+                <button id="cancelSwapBtn" class="btn btn-danger" style="margin-top: 1rem; padding: 0.5rem 1rem; min-height: auto;">Cancel</button>
+            </div>
+
+            <!-- Priority Change Audit Log -->
+            <div class="card">
+                <h2 class="card-header">Priority Change History</h2>
+                <div id="auditAlerts"></div>
+                <div id="auditContent">
+                    <p class="text-center">Loading audit log...</p>
+                </div>
+            </div>
+
+            <!-- Escalation Analytics -->
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2 class="card-header" style="margin-bottom: 0;">Escalation Analytics</h2>
+                    <select id="analyticsPeriod" class="form-select" style="width: auto; padding: 0.5rem;">
+                        <option value="7">Last 7 days</option>
+                        <option value="30" selected>Last 30 days</option>
+                        <option value="90">Last 90 days</option>
+                    </select>
+                </div>
+                <div id="analyticsContent">
+                    <p class="text-center">Switch to this tab to load analytics.</p>
+                </div>
+            </div>
+
+        </div><!-- /tab-top5 -->
+
     </div>
 
     <script src="/static/js/api.js"></script>
@@ -492,10 +556,25 @@
                     const jobId = parseInt(e.target.dataset.jobId);
                     const newPriority = e.target.value;
                     const originalValue = e.target.dataset.original || e.target.value;
+
+                    // Skip if no actual change
+                    if (newPriority === originalValue) return;
+
+                    // Prompt for reason
+                    const reason = prompt('Reason for changing priority to ' + newPriority + ':');
+                    if (!reason || !reason.trim()) {
+                        e.target.value = originalValue;
+                        return;
+                    }
+
                     e.target.disabled = true;
 
                     try {
-                        await updateJob(jobId, { priority_level: newPriority });
+                        await updateJob(jobId, {
+                            priority_level: newPriority,
+                            reason: reason.trim(),
+                            source: 'all_jobs'
+                        });
                         e.target.dataset.original = newPriority;
                         // Show brief success indicator
                         e.target.style.backgroundColor = '#dcfce7';
@@ -861,6 +940,364 @@
 
         function showUserAlert(message, type) {
             showAlertInContainer('userAlerts', message, type);
+        }
+
+        // ========== Tab Switching ==========
+
+        document.querySelectorAll('.admin-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+                if (tab.dataset.tab === 'top5') {
+                    loadTop5();
+                }
+            });
+        });
+
+        // ========== Top 5 Tab ==========
+
+        let currentTop5 = [];
+        let allJobsForSwap = [];
+        let swappingIndex = null;
+
+        document.getElementById('refreshTop5Btn').addEventListener('click', loadTop5);
+        document.getElementById('cancelSwapBtn').addEventListener('click', () => {
+            document.getElementById('swapJobCard').style.display = 'none';
+            swappingIndex = null;
+        });
+
+        async function loadTop5() {
+            const loading = document.getElementById('top5Loading');
+            const content = document.getElementById('top5Content');
+            loading.classList.remove('hidden');
+
+            try {
+                const data = await getTop5();
+                currentTop5 = data.top5.slice(0, 5);
+                allJobsForSwap = data.all_jobs;
+                renderTop5(currentTop5);
+                loadAuditLog();
+                loadEscalationAnalytics();
+            } catch (error) {
+                showAlertInContainer('top5Alerts', error.message, 'error');
+            } finally {
+                loading.classList.add('hidden');
+            }
+        }
+
+        function renderTop5(jobs) {
+            const content = document.getElementById('top5Content');
+            if (jobs.length === 0) {
+                content.innerHTML = '<p class="text-center">No jobs on the hot list. Jobs appear here when they have cams in sharpen.</p>';
+                return;
+            }
+
+            const html = `
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th style="width: 50px;">#</th>
+                            <th>S-Number</th>
+                            <th>Title</th>
+                            <th>Priority</th>
+                            <th>Score</th>
+                            <th>In Sharpen</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${jobs.map((job, i) => `
+                            <tr data-job-id="${job.job_id}" data-index="${i}">
+                                <td><strong>${i + 1}</strong></td>
+                                <td><strong>S${job.s_number}</strong></td>
+                                <td>${job.title || '-'}</td>
+                                <td>
+                                    <select class="form-select top5-priority" data-job-id="${job.job_id}" data-original="${job.priority_level || 'low'}" style="padding: 0.5rem;">
+                                        ${['low','medium','high','urgent','top'].map(p =>
+                                            '<option value="' + p + '" ' + ((job.priority_level||'low')===p?'selected':'') + '>' + p.charAt(0).toUpperCase()+p.slice(1) + '</option>'
+                                        ).join('')}
+                                    </select>
+                                </td>
+                                <td class="text-center">${job.priority_score}</td>
+                                <td class="text-center">${job.sharpen_count}</td>
+                                <td style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                    <a href="/static/job-detail.html?id=${job.job_id}" class="btn btn-primary" style="padding:0.5rem 1rem; min-height:auto;">View</a>
+                                    <button class="btn btn-warning swap-btn" data-index="${i}" style="padding:0.5rem 1rem; min-height:auto;">Swap</button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+                <div style="margin-top: 1rem; text-align: right;">
+                    <button id="saveTop5Btn" class="btn btn-success" style="padding: 0.75rem 2rem; min-height: auto;">Save Priority Changes</button>
+                </div>
+            `;
+
+            content.innerHTML = html;
+
+            // Swap button handlers
+            document.querySelectorAll('.swap-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    swappingIndex = parseInt(btn.dataset.index);
+                    showSwapPanel();
+                });
+            });
+
+            // Save button
+            document.getElementById('saveTop5Btn').addEventListener('click', saveTop5Priorities);
+        }
+
+        async function saveTop5Priorities() {
+            const btn = document.getElementById('saveTop5Btn');
+            btn.disabled = true;
+
+            const selects = document.querySelectorAll('.top5-priority');
+            const changes = [];
+
+            for (const select of selects) {
+                const jobId = parseInt(select.dataset.jobId);
+                const newPriority = select.value;
+                const originalPriority = select.dataset.original;
+
+                if (newPriority !== originalPriority) {
+                    const job = currentTop5.find(j => j.job_id === jobId);
+                    const reason = prompt('Reason for changing S' + (job ? job.s_number : jobId) + ' priority from ' + originalPriority + ' to ' + newPriority + ':');
+                    if (!reason || !reason.trim()) {
+                        showAlertInContainer('top5Alerts', 'Reason required for priority change. Save aborted.', 'error');
+                        btn.disabled = false;
+                        return;
+                    }
+                    changes.push({ job_id: jobId, priority_level: newPriority, reason: reason.trim() });
+                }
+            }
+
+            if (changes.length === 0) {
+                showAlertInContainer('top5Alerts', 'No priority changes to save.', 'error');
+                btn.disabled = false;
+                return;
+            }
+
+            try {
+                const result = await setTop5Priorities(changes);
+                const errors = (result.changes || []).filter(c => c.error);
+                if (errors.length > 0) {
+                    showAlertInContainer('top5Alerts', 'Some changes failed: ' + errors.map(e => e.error).join(', '), 'error');
+                } else {
+                    showAlertInContainer('top5Alerts', changes.length + ' priority change(s) saved.', 'success');
+                }
+                loadTop5();
+            } catch (error) {
+                showAlertInContainer('top5Alerts', error.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        // Swap panel
+        function showSwapPanel() {
+            const card = document.getElementById('swapJobCard');
+            card.style.display = '';
+            document.getElementById('swapSearchInput').value = '';
+            renderSwapCandidates('');
+            card.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function renderSwapCandidates(query) {
+            const top5Ids = currentTop5.map(j => j.job_id);
+            let candidates = allJobsForSwap.filter(j => !top5Ids.includes(j.id));
+
+            if (query && query.length >= 1) {
+                const q = query.toLowerCase();
+                candidates = candidates.filter(j =>
+                    j.s_number.toString().toLowerCase().includes(q) ||
+                    (j.title && j.title.toLowerCase().includes(q))
+                );
+            }
+
+            const container = document.getElementById('swapCandidates');
+            if (candidates.length === 0) {
+                container.innerHTML = '<p class="text-center">No matching jobs found.</p>';
+                return;
+            }
+
+            container.innerHTML = candidates.slice(0, 20).map(j => `
+                <div class="swap-candidate" data-job-id="${j.id}" style="padding: 0.75rem 1rem; border: 2px solid var(--border-color, #ddd); border-radius: 0.5rem; margin-bottom: 0.5rem; cursor: pointer; transition: all 0.2s; display: flex; justify-content: space-between; align-items: center;">
+                    <span><strong>S${j.s_number}</strong> - ${j.title || '(no title)'}</span>
+                    <span style="font-size: 0.85rem; color: var(--text-light);">${(j.priority_level || 'low').charAt(0).toUpperCase() + (j.priority_level || 'low').slice(1)}</span>
+                </div>
+            `).join('');
+
+            container.querySelectorAll('.swap-candidate').forEach(el => {
+                el.addEventListener('click', () => swapJobIn(parseInt(el.dataset.jobId)));
+                el.addEventListener('mouseenter', () => { el.style.borderColor = 'var(--primary-color, #3b82f6)'; el.style.background = '#f0f9ff'; });
+                el.addEventListener('mouseleave', () => { el.style.borderColor = 'var(--border-color, #ddd)'; el.style.background = ''; });
+            });
+        }
+
+        function swapJobIn(newJobId) {
+            if (swappingIndex === null) return;
+
+            const newJob = allJobsForSwap.find(j => j.id === newJobId);
+            if (!newJob) return;
+
+            // Create a hot-list-style entry for the swapped-in job
+            const placeholder = {
+                job_id: newJob.id,
+                s_number: newJob.s_number,
+                title: newJob.title,
+                priority_level: newJob.priority_level || 'low',
+                priority_score: 0,
+                sharpen_count: 0
+            };
+
+            currentTop5[swappingIndex] = placeholder;
+            renderTop5(currentTop5);
+
+            // Hide swap panel
+            document.getElementById('swapJobCard').style.display = 'none';
+            swappingIndex = null;
+        }
+
+        // Swap search with debounce
+        let swapSearchTimeout = null;
+        document.getElementById('swapSearchInput').addEventListener('input', (e) => {
+            clearTimeout(swapSearchTimeout);
+            swapSearchTimeout = setTimeout(() => {
+                renderSwapCandidates(e.target.value.trim());
+            }, 300);
+        });
+
+        // ========== Audit Log ==========
+
+        async function loadAuditLog() {
+            const content = document.getElementById('auditContent');
+            try {
+                const data = await getPriorityChanges({ limit: 20 });
+                if (data.items.length === 0) {
+                    content.innerHTML = '<p class="text-center">No priority changes recorded yet.</p>';
+                    return;
+                }
+
+                content.innerHTML = `
+                    <div class="table-responsive" style="overflow-x: auto;">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Job</th>
+                                    <th>Changed By</th>
+                                    <th>From</th>
+                                    <th>To</th>
+                                    <th>Reason</th>
+                                    <th>Source</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.items.map(c => `
+                                    <tr>
+                                        <td style="white-space: nowrap;">${formatDateTime(c.changed_at)}</td>
+                                        <td><strong>S${c.s_number}</strong></td>
+                                        <td>${c.changed_by_username}</td>
+                                        <td><span class="badge ${priorityBadgeClass(c.old_priority)}" style="font-size:0.75rem; padding:0.25rem 0.5rem;">${c.old_priority}</span></td>
+                                        <td><span class="badge ${priorityBadgeClass(c.new_priority)}" style="font-size:0.75rem; padding:0.25rem 0.5rem;">${c.new_priority}</span></td>
+                                        <td>${c.reason}</td>
+                                        <td>${c.source === 'top5' ? 'Top 5' : 'All Jobs'}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (error) {
+                content.innerHTML = '<div class="alert alert-error">' + error.message + '</div>';
+            }
+        }
+
+        function priorityBadgeClass(name) {
+            const map = { low: 'badge-low', medium: 'badge-medium', high: 'badge-high', urgent: 'badge-urgent', top: 'badge-urgent' };
+            return map[name] || 'badge-low';
+        }
+
+        // ========== Escalation Analytics ==========
+
+        document.getElementById('analyticsPeriod').addEventListener('change', loadEscalationAnalytics);
+
+        async function loadEscalationAnalytics() {
+            const content = document.getElementById('analyticsContent');
+            const days = parseInt(document.getElementById('analyticsPeriod').value);
+
+            try {
+                const data = await getPriorityAnalytics(days);
+                const viaTop5 = (data.by_source || []).find(s => s.source === 'top5');
+
+                let html = '<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1rem 0;">';
+                html += '<div style="background: #f0f9ff; padding: 1rem; border-radius: 0.5rem; text-align: center;">';
+                html += '<div style="font-size: 2rem; font-weight: 700;">' + data.total_changes + '</div>';
+                html += '<div style="font-size: 0.85rem; color: var(--text-light);">Total Changes (' + days + 'd)</div></div>';
+                html += '<div style="background: #f0fdf4; padding: 1rem; border-radius: 0.5rem; text-align: center;">';
+                html += '<div style="font-size: 2rem; font-weight: 700;">' + data.most_changed_jobs.length + '</div>';
+                html += '<div style="font-size: 0.85rem; color: var(--text-light);">Jobs Changed</div></div>';
+                html += '<div style="background: #fefce8; padding: 1rem; border-radius: 0.5rem; text-align: center;">';
+                html += '<div style="font-size: 2rem; font-weight: 700;">' + (viaTop5 ? viaTop5.count : 0) + '</div>';
+                html += '<div style="font-size: 0.85rem; color: var(--text-light);">Via Top 5</div></div>';
+                html += '</div>';
+
+                // Daily frequency bar chart
+                if (data.daily_counts.length > 0) {
+                    const maxCount = Math.max(...data.daily_counts.map(d => d.count));
+                    html += '<h3 style="margin: 1.5rem 0 1rem;">Daily Changes</h3>';
+                    data.daily_counts.forEach(d => {
+                        const pct = maxCount > 0 ? (d.count / maxCount * 100) : 0;
+                        html += '<div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.25rem;">';
+                        html += '<span style="min-width:80px; font-size:0.85rem; color:var(--text-light);">' + d.day + '</span>';
+                        html += '<div style="flex:1; background:#e2e8f0; border-radius:4px; height:20px;">';
+                        html += '<div style="width:' + pct + '%; background:var(--primary-color, #3b82f6); height:100%; border-radius:4px; min-width:' + (d.count > 0 ? '2px' : '0') + ';"></div>';
+                        html += '</div>';
+                        html += '<span style="min-width:30px; text-align:right; font-weight:600;">' + d.count + '</span>';
+                        html += '</div>';
+                    });
+                }
+
+                // Most escalated jobs
+                if (data.most_changed_jobs.length > 0) {
+                    html += '<h3 style="margin: 1.5rem 0 1rem;">Most Escalated Jobs</h3>';
+                    html += '<table class="table"><thead><tr><th>Job</th><th>Title</th><th>Current</th><th>Total Changes</th><th>Escalations</th></tr></thead><tbody>';
+                    data.most_changed_jobs.forEach(j => {
+                        html += '<tr>';
+                        html += '<td><strong>S' + j.s_number + '</strong></td>';
+                        html += '<td>' + (j.title || '-') + '</td>';
+                        html += '<td><span class="badge ' + priorityBadgeClass(j.priority_level) + '" style="font-size:0.75rem; padding:0.25rem 0.5rem;">' + (j.priority_level || 'low') + '</span></td>';
+                        html += '<td class="text-center">' + j.change_count + '</td>';
+                        html += '<td class="text-center">' + j.escalation_count + '</td>';
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table>';
+                }
+
+                // Transition matrix
+                if (data.transitions.length > 0) {
+                    html += '<h3 style="margin: 1.5rem 0 1rem;">Priority Transitions</h3>';
+                    html += '<table class="table"><thead><tr><th>From</th><th>To</th><th>Count</th></tr></thead><tbody>';
+                    data.transitions.forEach(t => {
+                        html += '<tr>';
+                        html += '<td><span class="badge ' + priorityBadgeClass(t.old_priority) + '" style="font-size:0.75rem; padding:0.25rem 0.5rem;">' + t.old_priority + '</span></td>';
+                        html += '<td><span class="badge ' + priorityBadgeClass(t.new_priority) + '" style="font-size:0.75rem; padding:0.25rem 0.5rem;">' + t.new_priority + '</span></td>';
+                        html += '<td>' + t.count + '</td>';
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table>';
+                }
+
+                if (data.total_changes === 0) {
+                    html += '<p class="text-center" style="margin-top: 1rem;">No priority changes in this period.</p>';
+                }
+
+                content.innerHTML = html;
+            } catch (error) {
+                content.innerHTML = '<div class="alert alert-error">' + error.message + '</div>';
+            }
         }
 
         // Initialize - load data if already logged in

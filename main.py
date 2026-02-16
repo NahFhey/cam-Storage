@@ -204,6 +204,8 @@ class JobUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=200)
     priority_level: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=1000)
+    reason: Optional[str] = Field(None, max_length=500, description="Reason for priority change (required when changing priority)")
+    source: Optional[str] = Field("all_jobs", description="Source of priority change: 'all_jobs' or 'top5'")
 
     @field_validator('priority_level')
     @classmethod
@@ -212,6 +214,18 @@ class JobUpdate(BaseModel):
         if v is not None and v not in config.PRIORITY_LEVELS:
             raise ValueError(f'Priority must be one of: {", ".join(config.PRIORITY_LEVELS)}')
         return v
+
+    @field_validator('source')
+    @classmethod
+    def validate_source(cls, v):
+        if v is not None and v not in ('all_jobs', 'top5'):
+            raise ValueError("Source must be 'all_jobs' or 'top5'")
+        return v
+
+
+class Top5UpdateRequest(BaseModel):
+    """Batch update priorities for Top 5 jobs."""
+    jobs: List[Dict] = Field(..., description="List of {job_id, priority_level, reason}")
 
 class CamItemCreate(BaseModel):
     job_id: int = Field(..., gt=0, description="Job ID")
@@ -731,10 +745,13 @@ async def update_job(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Update a job (requires admin authentication)"""
-    # Verify job exists
-    cursor = await db.execute("SELECT id FROM jobs WHERE id = ?", (job_id,))
-    if not await cursor.fetchone():
+    # Verify job exists and get current priority for audit
+    cursor = await db.execute("SELECT id, priority_level FROM jobs WHERE id = ?", (job_id,))
+    existing_job = await cursor.fetchone()
+    if not existing_job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    old_priority = existing_job['priority_level'] or 'low'
 
     # Build update query safely with explicit field mapping
     update_parts = []
@@ -744,6 +761,18 @@ async def update_job(
         update_parts.append("title = ?")
         values.append(job.title)
     if job.priority_level is not None:
+        # If priority is actually changing, require a reason and log it
+        if old_priority != job.priority_level:
+            if not job.reason or not job.reason.strip():
+                raise HTTPException(status_code=400, detail="Reason is required when changing priority")
+            await db.execute(
+                """INSERT INTO priority_changes
+                   (job_id, changed_by_user_id, changed_by_username, old_priority, new_priority, reason, source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (job_id, admin_user['user_id'], admin_user['username'],
+                 old_priority, job.priority_level, job.reason.strip(),
+                 job.source or 'all_jobs')
+            )
         update_parts.append("priority_level = ?")
         values.append(job.priority_level)
     if job.notes is not None:
@@ -758,6 +787,9 @@ async def update_job(
     query = f"UPDATE jobs SET {', '.join(update_parts)} WHERE id = ?"
     await db.execute(query, values)
     await db.commit()
+
+    # Invalidate hot list cache since priority affects it
+    _cache.invalidate()
 
     cursor = await db.execute("SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE id = ?", (job_id,))
     updated_job = await cursor.fetchone()
@@ -1325,6 +1357,189 @@ async def get_hot_list(db: aiosqlite.Connection = Depends(get_db)):
     hot_list = await generate_hot_list(db)
     _cache.set("hot_list", hot_list)
     return hot_list
+
+# ========== Top 5 Priority Management ==========
+
+@app.get("/api/top5")
+async def get_top5(
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Get Top 5 priority jobs from the hot list, plus all jobs for swap candidates."""
+    cached = _cache.get("hot_list")
+    if cached is not None:
+        hot_list = cached
+    else:
+        hot_list = await generate_hot_list(db)
+        _cache.set("hot_list", hot_list)
+
+    top5 = hot_list[:5]
+    remaining = hot_list[5:]
+
+    cursor = await db.execute(
+        "SELECT id, s_number, title, priority_level FROM jobs ORDER BY s_number"
+    )
+    all_jobs = [dict(row) for row in await cursor.fetchall()]
+
+    return {
+        "top5": top5,
+        "remaining_hot_list": remaining,
+        "all_jobs": all_jobs
+    }
+
+
+@app.post("/api/top5/set-priority")
+async def set_top5_priorities(
+    request_body: Top5UpdateRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Batch update priorities for Top 5 jobs with audit logging."""
+    if len(request_body.jobs) > 5:
+        raise HTTPException(status_code=400, detail="Maximum 5 jobs allowed")
+
+    results = []
+    for entry in request_body.jobs:
+        job_id = entry.get("job_id")
+        new_priority = entry.get("priority_level")
+        reason = (entry.get("reason") or "").strip()
+
+        if not job_id or not new_priority:
+            continue
+        if new_priority not in config.PRIORITY_LEVELS:
+            results.append({"job_id": job_id, "error": f"Invalid priority: {new_priority}"})
+            continue
+
+        cursor = await db.execute("SELECT priority_level FROM jobs WHERE id = ?", (job_id,))
+        row = await cursor.fetchone()
+        if not row:
+            results.append({"job_id": job_id, "error": "Job not found"})
+            continue
+
+        old_priority = row['priority_level'] or 'low'
+        if old_priority != new_priority:
+            if not reason:
+                results.append({"job_id": job_id, "error": "Reason required for priority change"})
+                continue
+
+            await db.execute("UPDATE jobs SET priority_level = ? WHERE id = ?", (new_priority, job_id))
+            await db.execute(
+                """INSERT INTO priority_changes
+                   (job_id, changed_by_user_id, changed_by_username, old_priority, new_priority, reason, source)
+                   VALUES (?, ?, ?, ?, ?, ?, 'top5')""",
+                (job_id, admin_user['user_id'], admin_user['username'],
+                 old_priority, new_priority, reason)
+            )
+            results.append({"job_id": job_id, "old": old_priority, "new": new_priority})
+
+    await db.commit()
+    _cache.invalidate()
+    return {"success": True, "changes": results}
+
+
+@app.get("/api/priority-changes")
+async def get_priority_changes(
+    job_id: Optional[int] = None,
+    limit: int = 50,
+    skip: int = 0,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Get priority change audit log, optionally filtered by job."""
+    conditions = []
+    params = []
+    if job_id is not None:
+        conditions.append("pc.job_id = ?")
+        params.append(job_id)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    query = f"""
+        SELECT pc.id, pc.job_id, pc.changed_by_user_id, pc.changed_by_username,
+               pc.old_priority, pc.new_priority, pc.reason, pc.source, pc.changed_at,
+               j.s_number, j.title
+        FROM priority_changes pc
+        JOIN jobs j ON pc.job_id = j.id
+        {where}
+        ORDER BY pc.changed_at DESC
+        LIMIT ? OFFSET ?
+    """
+    cursor = await db.execute(query, params + [limit, skip])
+    changes = [dict(row) for row in await cursor.fetchall()]
+
+    count_query = f"SELECT COUNT(*) as total FROM priority_changes pc {where}"
+    cursor = await db.execute(count_query, params)
+    total = (await cursor.fetchone())['total']
+
+    return {"items": changes, "total": total}
+
+
+@app.get("/api/priority-changes/analytics")
+async def get_priority_analytics(
+    days: int = 30,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Get priority change analytics: trends, most-escalated jobs, frequency."""
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+    # Changes per day
+    cursor = await db.execute("""
+        SELECT DATE(changed_at) as day, COUNT(*) as count
+        FROM priority_changes
+        WHERE changed_at >= ?
+        GROUP BY DATE(changed_at)
+        ORDER BY day
+    """, (cutoff,))
+    daily_counts = [dict(row) for row in await cursor.fetchall()]
+
+    # Most escalated jobs
+    cursor = await db.execute("""
+        SELECT j.id, j.s_number, j.title, j.priority_level,
+               COUNT(*) as change_count,
+               COUNT(CASE WHEN pc.new_priority IN ('urgent', 'top') THEN 1 END) as escalation_count
+        FROM priority_changes pc
+        JOIN jobs j ON pc.job_id = j.id
+        WHERE pc.changed_at >= ?
+        GROUP BY pc.job_id
+        ORDER BY change_count DESC
+        LIMIT 10
+    """, (cutoff,))
+    most_changed = [dict(row) for row in await cursor.fetchall()]
+
+    # Priority transition matrix
+    cursor = await db.execute("""
+        SELECT old_priority, new_priority, COUNT(*) as count
+        FROM priority_changes
+        WHERE changed_at >= ?
+        GROUP BY old_priority, new_priority
+        ORDER BY count DESC
+    """, (cutoff,))
+    transitions = [dict(row) for row in await cursor.fetchall()]
+
+    # Changes by source
+    cursor = await db.execute("""
+        SELECT source, COUNT(*) as count
+        FROM priority_changes
+        WHERE changed_at >= ?
+        GROUP BY source
+    """, (cutoff,))
+    by_source = [dict(row) for row in await cursor.fetchall()]
+
+    # Total changes
+    cursor = await db.execute(
+        "SELECT COUNT(*) as total FROM priority_changes WHERE changed_at >= ?", (cutoff,)
+    )
+    total = (await cursor.fetchone())['total']
+
+    return {
+        "period_days": days,
+        "total_changes": total,
+        "daily_counts": daily_counts,
+        "most_changed_jobs": most_changed,
+        "transitions": transitions,
+        "by_source": by_source
+    }
 
 # ========== Search Endpoint ==========
 
