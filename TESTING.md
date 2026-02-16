@@ -25,7 +25,7 @@ pytest tests/test_entry_parser.py -v
 # Database and business logic tests
 pytest tests/test_database.py -v
 
-# API endpoint tests (requires database setup)
+# API endpoint tests
 pytest tests/test_api.py -v
 ```
 
@@ -65,14 +65,15 @@ pytest tests/ --cov=. --cov-report=html
   - Hot list generation
 
 ### test_api.py
-- **TestAuthentication**: HTTP Basic Auth security tests
-  - Unauthorized access rejection
-  - Invalid credentials rejection
-  - Valid credentials acceptance
+- **TestAuthentication**: PIN-based authentication tests
+  - Unauthorized access rejection (no token)
+  - Invalid PIN rejection
+  - Valid PIN login and Bearer token issuance
+  - Session-based access control
 
 - **TestJobsAPI**: Job management endpoint tests
-  - Listing jobs
-  - Creating jobs
+  - Listing jobs (with pagination)
+  - Creating jobs (admin only)
   - Updating jobs
   - Deleting jobs
   - Duplicate prevention
@@ -82,6 +83,7 @@ pytest tests/ --cov=. --cov-report=html
   - Moving CAMs between stations
   - Same station move prevention
   - Undo operations
+  - Material removal tracking (sharpen to cabinet)
 
 - **TestSearchAPI**: Search functionality tests
 - **TestConfigAPI**: Configuration management tests
@@ -89,39 +91,18 @@ pytest tests/ --cov=. --cov-report=html
 
 ## Test Status
 
-✅ **29 tests passing** (Entry Parser + Database/Business Logic)
-⚠️ **15 tests require database setup** (API tests)
+**82 tests passing** across all test files (Entry Parser + Database/Business Logic + API)
 
-## Known Issues
+## Test Fixtures
 
-### API Tests
-The API tests currently require the database to be initialized before running. To run these tests:
-
-1. Initialize the database:
-   ```bash
-   python database.py
-   ```
-
-2. Set environment variables:
-   ```bash
-   export ADMIN_USERNAME=admin
-   export ADMIN_PASSWORD=admin123
-   ```
-
-3. Run the API tests:
-   ```bash
-   pytest tests/test_api.py -v
-   ```
+Available fixtures (see `tests/conftest.py`):
+- `test_db_path`: Temporary SQLite database file, initialized with full schema
+- `test_db`: Async `aiosqlite` connection to the temporary database
+- `client`: FastAPI `TestClient` with isolated test database and rate limiting disabled
+- `auth_headers`: Admin Bearer token headers (logs in with default admin PIN `1234`)
+- `user_auth_headers`: Regular user Bearer token headers (creates a test worker, logs in with PIN `5678`)
 
 ## Writing New Tests
-
-### Test Fixtures
-
-Available fixtures (see `conftest.py`):
-- `test_db_path`: Temporary database file path
-- `test_db`: Async database connection
-- `client`: FastAPI TestClient
-- `auth_headers`: Admin authentication headers
 
 ### Example Test
 
@@ -143,6 +124,19 @@ async def test_my_feature(test_db):
 
     # Assert results
     assert job_id > 0
+```
+
+### Example API Test
+
+```python
+def test_create_job(client, auth_headers):
+    response = client.post("/api/jobs", json={
+        "s_number": "S9999",
+        "title": "Test Job",
+        "priority_level": "medium"
+    }, headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["s_number"] == "9999"
 ```
 
 ## Continuous Integration
@@ -172,5 +166,5 @@ jobs:
 
 - **Entry Parser**: 100% (achieved)
 - **Database/Business Logic**: 90%+ (achieved)
-- **API Endpoints**: 80%+ (in progress)
+- **API Endpoints**: 80%+ (achieved)
 - **Overall**: 85%+

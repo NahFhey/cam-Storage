@@ -300,8 +300,8 @@ class TestBusinessLogic:
 
         # cam_no 2 is in refill across all sets => blocked
         assert job_entry['has_blocked_position'] is True
-        # Priority should include the +2 blocked position boost (base 0 + blocked 2 = at least 2)
-        assert job_entry['priority_score'] >= 2
+        # Priority should include the +100 blocked position boost (base 0 + blocked 100 = at least 100)
+        assert job_entry['priority_score'] >= 100
 
     async def test_hot_list_blocked_position_all_sharpen(self, test_db):
         """Test that a job gets has_blocked_position=True when all instances of a cam_no are in sharpen"""
@@ -338,7 +338,7 @@ class TestBusinessLogic:
 
         # cam_no 2 is in sharpen across all sets => blocked
         assert job_entry['has_blocked_position'] is True
-        assert job_entry['priority_score'] >= 2
+        assert job_entry['priority_score'] >= 100
 
     async def test_hot_list_no_blocked_position_when_one_available(self, test_db):
         """Test that has_blocked_position=False when every cam_no has at least one available instance"""
@@ -409,7 +409,7 @@ class TestBusinessLogic:
         assert job_entry['available_sets'] == 1
 
     def test_calculate_priority_blocked_position_boost(self):
-        """Test calculate_priority gives +2 for blocked position"""
+        """Test calculate_priority gives +100 for blocked position"""
         from business_logic import calculate_priority
 
         _, score_without, _ = calculate_priority(
@@ -421,4 +421,4 @@ class TestBusinessLogic:
             has_blocked_position=True
         )
 
-        assert score_with == score_without + 2
+        assert score_with == score_without + 100
