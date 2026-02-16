@@ -282,14 +282,24 @@ async def get_config_value(key: str, default: str = None, db=None) -> Optional[s
         row = await cursor.fetchone()
         return row['value'] if row else default
 
-async def set_config_value(key: str, value: str):
-    """Set configuration value in database"""
-    async with get_db_connection() as db:
+async def set_config_value(key: str, value: str, db=None):
+    """Set configuration value in database.
+
+    If a db connection is provided, uses it directly (caller must commit).
+    Otherwise opens a new connection and auto-commits.
+    """
+    if db is not None:
         await db.execute(
             "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
             (key, value)
         )
-        await db.commit()
+        return
+    async with get_db_connection() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (key, value)
+        )
+        await conn.commit()
 
 def hash_pin(pin: str) -> str:
     """Hash a PIN with a random salt using PBKDF2"""

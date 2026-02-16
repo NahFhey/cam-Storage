@@ -265,6 +265,13 @@ async function setTop5Priorities(jobs) {
     });
 }
 
+async function reorderTop5(jobIds) {
+    return apiCall('/top5/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ job_ids: jobIds })
+    });
+}
+
 async function getPriorityChanges(filters = {}) {
     const params = new URLSearchParams(filters);
     return apiCall(`/priority-changes?${params}`);

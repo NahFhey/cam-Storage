@@ -1,6 +1,7 @@
 """
 FastAPI backend for CAM Tracking Kiosk
 """
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status, Request
 from fastapi.staticfiles import StaticFiles
@@ -226,6 +227,10 @@ class JobUpdate(BaseModel):
 class Top5UpdateRequest(BaseModel):
     """Batch update priorities for Top 5 jobs."""
     jobs: List[Dict] = Field(..., description="List of {job_id, priority_level, reason}")
+
+class Top5ReorderRequest(BaseModel):
+    """Reorder the Top 5 jobs."""
+    job_ids: List[int] = Field(..., description="Ordered list of job IDs (position 1 first)")
 
 class CamItemCreate(BaseModel):
     job_id: int = Field(..., gt=0, description="Job ID")
@@ -1373,8 +1378,26 @@ async def get_top5(
         hot_list = await generate_hot_list(db)
         _cache.set("hot_list", hot_list)
 
-    top5 = hot_list[:5]
-    remaining = hot_list[5:]
+    # Check for a manually saved order
+    saved_order = await get_config_value("top5_order", db=db)
+    if saved_order:
+        try:
+            ordered_ids = json.loads(saved_order)
+            hot_map = {item['job_id']: item for item in hot_list}
+            ordered = [hot_map[jid] for jid in ordered_ids if jid in hot_map]
+            # Fill remaining slots from hot list (for any new jobs not in saved order)
+            seen = {item['job_id'] for item in ordered}
+            for item in hot_list:
+                if item['job_id'] not in seen and len(ordered) < 5:
+                    ordered.append(item)
+            top5 = ordered[:5]
+        except (json.JSONDecodeError, KeyError):
+            top5 = hot_list[:5]
+    else:
+        top5 = hot_list[:5]
+
+    top5_ids = {item['job_id'] for item in top5}
+    remaining = [item for item in hot_list if item['job_id'] not in top5_ids]
 
     cursor = await db.execute(
         "SELECT id, s_number, title, priority_level FROM jobs ORDER BY s_number"
@@ -1435,6 +1458,22 @@ async def set_top5_priorities(
     await db.commit()
     _cache.invalidate()
     return {"success": True, "changes": results}
+
+
+@app.post("/api/top5/reorder")
+async def reorder_top5(
+    request_body: Top5ReorderRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Save a manual ordering for the Top 5 jobs."""
+    if len(request_body.job_ids) > 5:
+        raise HTTPException(status_code=400, detail="Maximum 5 jobs allowed")
+
+    await set_config_value("top5_order", json.dumps(request_body.job_ids), db=db)
+    await db.commit()
+    logger.info(f"Admin '{admin_user['username']}' reordered Top 5: {request_body.job_ids}")
+    return {"success": True, "order": request_body.job_ids}
 
 
 @app.get("/api/priority-changes")

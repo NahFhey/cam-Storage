@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CAM Tracking - Admin</title>
     <link rel="stylesheet" href="/static/css/styles.css">
+    <style>
+        .top5-row.drag-over { border-top: 3px solid var(--primary-color, #3b82f6); }
+        .top5-row[draggable="true"] { transition: opacity 0.2s; }
+        .drag-handle:active { cursor: grabbing; }
+    </style>
 </head>
 <body>
     <nav>
@@ -987,6 +992,8 @@
             }
         }
 
+        let dragSrcIndex = null;
+
         function renderTop5(jobs) {
             const content = document.getElementById('top5Content');
             if (jobs.length === 0) {
@@ -995,9 +1002,10 @@
             }
 
             const html = `
-                <table class="table">
+                <table class="table" id="top5Table">
                     <thead>
                         <tr>
+                            <th style="width: 40px;"></th>
                             <th style="width: 50px;">#</th>
                             <th>S-Number</th>
                             <th>Title</th>
@@ -1009,7 +1017,8 @@
                     </thead>
                     <tbody>
                         ${jobs.map((job, i) => `
-                            <tr data-job-id="${job.job_id}" data-index="${i}">
+                            <tr data-job-id="${job.job_id}" data-index="${i}" draggable="true" class="top5-row">
+                                <td class="drag-handle" style="cursor: grab; text-align: center; color: var(--text-light, #888); user-select: none;">&#9776;</td>
                                 <td><strong>${i + 1}</strong></td>
                                 <td><strong>S${job.s_number}</strong></td>
                                 <td>${job.title || '-'}</td>
@@ -1037,6 +1046,37 @@
 
             content.innerHTML = html;
 
+            // Drag-and-drop handlers
+            document.querySelectorAll('.top5-row').forEach(row => {
+                row.addEventListener('dragstart', (e) => {
+                    dragSrcIndex = parseInt(row.dataset.index);
+                    row.style.opacity = '0.4';
+                    e.dataTransfer.effectAllowed = 'move';
+                });
+                row.addEventListener('dragend', () => {
+                    row.style.opacity = '1';
+                    document.querySelectorAll('.top5-row').forEach(r => r.classList.remove('drag-over'));
+                });
+                row.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    row.classList.add('drag-over');
+                });
+                row.addEventListener('dragleave', () => {
+                    row.classList.remove('drag-over');
+                });
+                row.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    const dropIndex = parseInt(row.dataset.index);
+                    if (dragSrcIndex !== null && dragSrcIndex !== dropIndex) {
+                        const moved = currentTop5.splice(dragSrcIndex, 1)[0];
+                        currentTop5.splice(dropIndex, 0, moved);
+                        renderTop5(currentTop5);
+                        saveTop5Order();
+                    }
+                });
+            });
+
             // Swap button handlers
             document.querySelectorAll('.swap-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
@@ -1047,6 +1087,14 @@
 
             // Save button
             document.getElementById('saveTop5Btn').addEventListener('click', saveTop5Priorities);
+        }
+
+        async function saveTop5Order() {
+            try {
+                await reorderTop5(currentTop5.map(j => j.job_id));
+            } catch (error) {
+                showAlertInContainer('top5Alerts', 'Failed to save order: ' + error.message, 'error');
+            }
         }
 
         async function saveTop5Priorities() {
@@ -1154,6 +1202,7 @@
 
             currentTop5[swappingIndex] = placeholder;
             renderTop5(currentTop5);
+            saveTop5Order();
 
             // Hide swap panel
             document.getElementById('swapJobCard').style.display = 'none';
