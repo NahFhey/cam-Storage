@@ -164,7 +164,6 @@
                         <thead>
                             <tr>
                                 <th>Tool</th>
-                                <th>Job</th>
                                 <th>Station</th>
                                 <th>Last Update</th>
                                 <th>Action</th>
@@ -176,7 +175,6 @@
                                 return `
                                     <tr>
                                         <td><strong>S${job ? job.s_number : cam.job_id} Set${cam.set_no} Cam${cam.cam_no}</strong></td>
-                                        <td>${job ? job.title || '-' : '-'}</td>
                                         <td>
                                             <span class="badge ${getStationBadgeClass(cam.status_station)}">
                                                 ${formatStation(cam.status_station)}
