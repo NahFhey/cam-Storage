@@ -371,6 +371,14 @@ async function exportMovesCSV() {
     await _downloadFile('/export/moves/csv', 'moves.csv');
 }
 
+async function exportToolLifespansCSV() {
+    await _downloadFile('/export/tool-lifespans/csv', 'tool_lifespans.csv');
+}
+
+async function exportPriorityChangesCSV() {
+    await _downloadFile('/export/priority-changes/csv', 'priority_changes.csv');
+}
+
 async function exportDatabase() {
     await _downloadFile('/export/database', 'cam_tracking_backup.db');
 }
