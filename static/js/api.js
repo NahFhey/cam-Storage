@@ -375,6 +375,10 @@ async function exportToolLifespansCSV() {
     await _downloadFile('/export/tool-lifespans/csv', 'tool_lifespans.csv');
 }
 
+async function exportToolSummaryCSV() {
+    await _downloadFile('/export/tool-summary/csv', 'tool_summary.csv');
+}
+
 async function exportPriorityChangesCSV() {
     await _downloadFile('/export/priority-changes/csv', 'priority_changes.csv');
 }
