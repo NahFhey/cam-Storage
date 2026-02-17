@@ -9,6 +9,9 @@
         .top5-row.drag-over { border-top: 3px solid var(--primary-color, #3b82f6); }
         .top5-row[draggable="true"] { transition: opacity 0.2s; }
         .drag-handle:active { cursor: grabbing; }
+        .sortable-header:hover { background: rgba(0,0,0,0.05); }
+        .sortable-header.active-sort { color: var(--primary-color, #3b82f6); }
+        .sort-indicator { font-size: 0.7rem; margin-left: 0.25rem; }
     </style>
 </head>
 <body>
@@ -1256,10 +1259,14 @@
                     });
                 }
 
-                // Most escalated jobs
+                // Most escalated jobs (sortable)
                 if (data.most_changed_jobs.length > 0) {
                     html += '<h3 style="margin: 1.5rem 0 1rem;">Most Escalated Jobs</h3>';
-                    html += '<table class="table"><thead><tr><th>Job</th><th>Title</th><th>Current</th><th>Total Changes</th><th>Escalations</th></tr></thead><tbody>';
+                    html += '<table class="table" id="escalationTable"><thead><tr><th>Job</th><th>Title</th><th>Current</th>';
+                    html += '<th class="sortable-header" data-sort="change_count" style="cursor:pointer; user-select:none;">Total Changes <span class="sort-indicator"></span></th>';
+                    html += '<th class="sortable-header active-sort" data-sort="escalation_count" style="cursor:pointer; user-select:none;">Escalations <span class="sort-indicator">&#9660;</span></th>';
+                    html += '</tr></thead><tbody id="escalationBody">';
+                    data.most_changed_jobs.sort((a, b) => b.escalation_count - a.escalation_count || b.change_count - a.change_count);
                     data.most_changed_jobs.forEach(j => {
                         html += '<tr>';
                         html += '<td><strong>S' + j.s_number + '</strong></td>';
@@ -1270,6 +1277,10 @@
                         html += '</tr>';
                     });
                     html += '</tbody></table>';
+                    // Store data for client-side re-sorting
+                    window._escalationData = data.most_changed_jobs;
+                    window._escalationSortKey = 'escalation_count';
+                    window._escalationSortAsc = false;
                 }
 
                 // Transition matrix
@@ -1291,6 +1302,44 @@
                 }
 
                 content.innerHTML = html;
+
+                // Bind sortable header clicks
+                content.querySelectorAll('.sortable-header').forEach(th => {
+                    th.addEventListener('click', () => {
+                        const key = th.dataset.sort;
+                        if (window._escalationSortKey === key) {
+                            window._escalationSortAsc = !window._escalationSortAsc;
+                        } else {
+                            window._escalationSortKey = key;
+                            window._escalationSortAsc = false;
+                        }
+                        const dir = window._escalationSortAsc ? 1 : -1;
+                        window._escalationData.sort((a, b) => (a[key] - b[key]) * dir || (b.escalation_count - a.escalation_count));
+
+                        const tbody = document.getElementById('escalationBody');
+                        tbody.innerHTML = window._escalationData.map(j =>
+                            '<tr>' +
+                            '<td><strong>S' + j.s_number + '</strong></td>' +
+                            '<td>' + (j.title || '-') + '</td>' +
+                            '<td><span class="badge ' + priorityBadgeClass(j.priority_level) + '" style="font-size:0.75rem; padding:0.25rem 0.5rem;">' + (j.priority_level || 'low') + '</span></td>' +
+                            '<td class="text-center">' + j.change_count + '</td>' +
+                            '<td class="text-center">' + j.escalation_count + '</td>' +
+                            '</tr>'
+                        ).join('');
+
+                        // Update indicators
+                        content.querySelectorAll('.sortable-header').forEach(h => {
+                            const ind = h.querySelector('.sort-indicator');
+                            if (h.dataset.sort === key) {
+                                h.classList.add('active-sort');
+                                ind.innerHTML = window._escalationSortAsc ? '&#9650;' : '&#9660;';
+                            } else {
+                                h.classList.remove('active-sort');
+                                ind.innerHTML = '';
+                            }
+                        });
+                    });
+                });
             } catch (error) {
                 content.innerHTML = '<div class="alert alert-error">' + error.message + '</div>';
             }

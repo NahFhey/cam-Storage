@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CAM Tracking - Analytics</title>
     <link rel="stylesheet" href="/static/css/styles.css">
+    <style>
+        .sortable-col { cursor: pointer; user-select: none; }
+        .sortable-col:hover { background: rgba(0,0,0,0.05); }
+        .sortable-col.active-sort { color: var(--primary-color, #3b82f6); }
+        .sort-arrow { font-size: 0.7rem; margin-left: 0.25rem; }
+    </style>
 </head>
 <body>
     <nav>
@@ -110,6 +116,45 @@
     <script src="/static/js/api.js"></script>
     <script src="/static/js/auth.js"></script>
     <script>
+        // Reusable sortable table helper
+        // tableId: id of the <table>, dataKey: window[dataKey] holds row data,
+        // columns: [{key, label, render(row)}], defaultSort: key, defaultAsc: bool
+        function makeSortableTable(tableId, dataKey, columns, defaultSort, defaultAsc) {
+            const state = { key: defaultSort, asc: defaultAsc };
+
+            function render() {
+                const data = window[dataKey];
+                if (!data || !data.length) return;
+                const dir = state.asc ? 1 : -1;
+                data.sort((a, b) => {
+                    const av = typeof a[state.key] === 'string' ? a[state.key].toLowerCase() : (a[state.key] || 0);
+                    const bv = typeof b[state.key] === 'string' ? b[state.key].toLowerCase() : (b[state.key] || 0);
+                    if (av < bv) return -1 * dir;
+                    if (av > bv) return 1 * dir;
+                    return 0;
+                });
+                const table = document.getElementById(tableId);
+                if (!table) return;
+                const thead = table.querySelector('thead tr');
+                thead.innerHTML = columns.map(col => {
+                    const isSorted = state.key === col.key;
+                    const sortable = col.key ? 'sortable-col' + (isSorted ? ' active-sort' : '') : '';
+                    const arrow = isSorted ? (state.asc ? '<span class="sort-arrow">&#9650;</span>' : '<span class="sort-arrow">&#9660;</span>') : '';
+                    return '<th class="' + sortable + '"' + (col.key ? ' data-sort="' + col.key + '"' : '') + '>' + col.label + arrow + '</th>';
+                }).join('');
+                table.querySelector('tbody').innerHTML = data.map(row => '<tr>' + columns.map(col => col.render(row)).join('') + '</tr>').join('');
+                // Bind click handlers
+                thead.querySelectorAll('.sortable-col').forEach(th => {
+                    th.addEventListener('click', () => {
+                        if (state.key === th.dataset.sort) { state.asc = !state.asc; }
+                        else { state.key = th.dataset.sort; state.asc = false; }
+                        render();
+                    });
+                });
+            }
+            return render;
+        }
+
         const loading = document.getElementById('loading');
         const refreshBtn = document.getElementById('refreshBtn');
 
@@ -235,6 +280,11 @@
             document.getElementById('sharpenBacklogSection').classList.remove('hidden');
         }
 
+        const renderCycleTable = makeSortableTable('cycleTable', '_cycleData', [
+            { key: 's_number', label: 'Tool', render: r => '<td>S' + r.s_number + ' Set' + r.set_no + ' Cam' + r.cam_no + '</td>' },
+            { key: 'cycle_count', label: 'Cycles (Active Moves)', render: r => '<td>' + r.cycle_count + '</td>' }
+        ], 'cycle_count', false);
+
         async function loadCycleCounts() {
             const data = await getCycleCounts(20);
             const container = document.getElementById('cycleCounts');
@@ -242,25 +292,9 @@
             if (data.length === 0) {
                 container.innerHTML = '<p class="text-center">No cycle data available</p>';
             } else {
-                const html = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Tool</th>
-                                <th>Cycles (Active Moves)</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${data.map(item => `
-                                <tr>
-                                    <td>S${item.s_number} Set${item.set_no} Cam${item.cam_no}</td>
-                                    <td>${item.cycle_count}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                `;
-                container.innerHTML = html;
+                window._cycleData = data;
+                container.innerHTML = '<table class="table" id="cycleTable"><thead><tr></tr></thead><tbody></tbody></table>';
+                renderCycleTable();
             }
 
             document.getElementById('cycleCountsSection').classList.remove('hidden');
@@ -377,6 +411,12 @@
             document.getElementById('refillForecastSection').classList.remove('hidden');
         }
 
+        const renderTransitionsTable = makeSortableTable('transitionsTable', '_transitionsData', [
+            { key: 'from_station', label: 'From', render: r => '<td><span class="badge ' + getStationBadgeClass(r.from_station) + '">' + formatStation(r.from_station) + '</span></td>' },
+            { key: 'to_station', label: 'To', render: r => '<td><span class="badge ' + getStationBadgeClass(r.to_station) + '">' + formatStation(r.to_station) + '</span></td>' },
+            { key: 'count', label: 'Count', render: r => '<td>' + r.count + '</td>' }
+        ], 'count', false);
+
         async function loadStationTransitions() {
             const data = await getStationTransitions(30);
             const container = document.getElementById('stationTransitions');
@@ -384,31 +424,20 @@
             if (data.length === 0) {
                 container.innerHTML = '<p class="text-center">No transition data available</p>';
             } else {
-                const html = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>From</th>
-                                <th>To</th>
-                                <th>Count</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${data.map(item => `
-                                <tr>
-                                    <td><span class="badge ${getStationBadgeClass(item.from_station)}">${formatStation(item.from_station)}</span></td>
-                                    <td><span class="badge ${getStationBadgeClass(item.to_station)}">${formatStation(item.to_station)}</span></td>
-                                    <td>${item.count}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                `;
-                container.innerHTML = html;
+                window._transitionsData = data;
+                container.innerHTML = '<table class="table" id="transitionsTable"><thead><tr></tr></thead><tbody></tbody></table>';
+                renderTransitionsTable();
             }
 
             document.getElementById('stationTransitionsSection').classList.remove('hidden');
         }
+
+        const renderOperatorTable = makeSortableTable('operatorTable', '_operatorData', [
+            { key: 'operator', label: 'Operator', render: r => '<td><strong>' + r.operator + '</strong></td>' },
+            { key: 'move_count', label: 'Total Moves', render: r => '<td>' + r.move_count + '</td>' },
+            { key: 'sharpen_moves', label: 'Sharpen Moves', render: r => '<td>' + r.sharpen_moves + '</td>' },
+            { key: 'total_material_removed', label: 'Material Removed', render: r => '<td>' + (r.total_material_removed ? r.total_material_removed.toFixed(3) + '"' : '-') + '</td>' }
+        ], 'move_count', false);
 
         async function loadOperatorActivity() {
             const data = await getOperatorActivity(30);
@@ -417,29 +446,9 @@
             if (data.length === 0) {
                 container.innerHTML = '<p class="text-center">No operator data available</p>';
             } else {
-                const html = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Operator</th>
-                                <th>Total Moves</th>
-                                <th>Sharpen Moves</th>
-                                <th>Material Removed</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${data.map(item => `
-                                <tr>
-                                    <td><strong>${item.operator}</strong></td>
-                                    <td>${item.move_count}</td>
-                                    <td>${item.sharpen_moves}</td>
-                                    <td>${item.total_material_removed ? item.total_material_removed.toFixed(3) + '"' : '-'}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                `;
-                container.innerHTML = html;
+                window._operatorData = data;
+                container.innerHTML = '<table class="table" id="operatorTable"><thead><tr></tr></thead><tbody></tbody></table>';
+                renderOperatorTable();
             }
 
             document.getElementById('operatorActivitySection').classList.remove('hidden');

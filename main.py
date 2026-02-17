@@ -1570,7 +1570,7 @@ async def get_priority_analytics(
         JOIN jobs j ON pc.job_id = j.id
         WHERE pc.changed_at >= ?
         GROUP BY pc.job_id
-        ORDER BY change_count DESC
+        ORDER BY escalation_count DESC, change_count DESC
         LIMIT 10
     """, (cutoff,))
     most_changed = [dict(row) for row in await cursor.fetchall()]
