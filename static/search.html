@@ -127,7 +127,7 @@
                                 <tr>
                                     <td><strong>S${job.s_number}</strong></td>
                                     <td>${job.title || '-'}</td>
-                                    <td>${job.priority_base}</td>
+                                    <td>${job.priority_level || 'low'}</td>
                                     <td>${formatDate(job.created_at)}</td>
                                     <td>
                                         <a href="/static/job-detail.html?id=${job.id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
