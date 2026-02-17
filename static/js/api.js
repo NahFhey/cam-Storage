@@ -312,6 +312,22 @@ async function getRefillForecast(limit = 50) {
     return apiCall(`/analytics/refill-forecast?limit=${limit}`);
 }
 
+async function getStationTransitions(days = 30) {
+    return apiCall(`/analytics/station-transitions?days=${days}`);
+}
+
+async function getOperatorActivity(days = 30) {
+    return apiCall(`/analytics/operator-activity?days=${days}`);
+}
+
+async function getLifespanStats() {
+    return apiCall('/analytics/lifespan-stats');
+}
+
+async function getMaterialTrends(days = 30) {
+    return apiCall(`/analytics/material-trends?days=${days}`);
+}
+
 // Lifespan
 async function getCamLifespan(camItemId) {
     return apiCall(`/cam-items/${camItemId}/lifespan`);

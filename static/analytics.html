@@ -68,6 +68,42 @@
                 <h3 style="margin: 2rem 0 1rem;">Refill Forecast (Tools Approaching End of Life)</h3>
                 <div id="refillForecast"></div>
             </div>
+
+            <!-- Station Transitions -->
+            <div id="stationTransitionsSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Station Transitions (Last 30 Days)</h3>
+                <div id="stationTransitions"></div>
+            </div>
+
+            <!-- Operator Activity -->
+            <div id="operatorActivitySection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Operator Activity (Last 30 Days)</h3>
+                <div id="operatorActivity"></div>
+            </div>
+
+            <!-- Tool Lifespan Stats -->
+            <div id="lifespanStatsSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Tool Lifespan Statistics</h3>
+                <div id="lifespanStats"></div>
+            </div>
+
+            <!-- Material Trends -->
+            <div id="materialTrendsSection" class="hidden">
+                <h3 style="margin: 2rem 0 1rem;">Material Removal Trends (Last 30 Days)</h3>
+                <div id="materialTrends"></div>
+            </div>
+
+            <!-- Export Section -->
+            <div id="exportSection" style="margin-top: 2rem; padding-top: 1.5rem; border-top: 2px solid var(--border-color, #ddd);">
+                <h3 style="margin: 0 0 1rem;">Export Data</h3>
+                <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                    <a href="/api/export/jobs/csv" class="btn btn-primary" style="padding:0.5rem 1rem; min-height:auto; text-decoration:none;">Jobs CSV</a>
+                    <a href="/api/export/cam-items/csv" class="btn btn-primary" style="padding:0.5rem 1rem; min-height:auto; text-decoration:none;">CAM Items CSV</a>
+                    <a href="/api/export/moves/csv" class="btn btn-primary" style="padding:0.5rem 1rem; min-height:auto; text-decoration:none;">Moves CSV</a>
+                    <a href="/api/export/tool-lifespans/csv" class="btn btn-primary" style="padding:0.5rem 1rem; min-height:auto; text-decoration:none;">Tool Lifespans CSV</a>
+                    <a href="/api/export/priority-changes/csv" class="btn btn-primary" style="padding:0.5rem 1rem; min-height:auto; text-decoration:none;">Priority Changes CSV</a>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -91,7 +127,11 @@
                     loadSharpenBacklog(),
                     loadCycleCounts(),
                     loadMaterialStats(),
-                    loadRefillForecast()
+                    loadRefillForecast(),
+                    loadStationTransitions(),
+                    loadOperatorActivity(),
+                    loadLifespanStats(),
+                    loadMaterialTrends()
                 ]);
             } catch (error) {
                 showError(error.message);
@@ -335,6 +375,176 @@
             }
 
             document.getElementById('refillForecastSection').classList.remove('hidden');
+        }
+
+        async function loadStationTransitions() {
+            const data = await getStationTransitions(30);
+            const container = document.getElementById('stationTransitions');
+
+            if (data.length === 0) {
+                container.innerHTML = '<p class="text-center">No transition data available</p>';
+            } else {
+                const html = `
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>From</th>
+                                <th>To</th>
+                                <th>Count</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.map(item => `
+                                <tr>
+                                    <td><span class="badge ${getStationBadgeClass(item.from_station)}">${formatStation(item.from_station)}</span></td>
+                                    <td><span class="badge ${getStationBadgeClass(item.to_station)}">${formatStation(item.to_station)}</span></td>
+                                    <td>${item.count}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+                container.innerHTML = html;
+            }
+
+            document.getElementById('stationTransitionsSection').classList.remove('hidden');
+        }
+
+        async function loadOperatorActivity() {
+            const data = await getOperatorActivity(30);
+            const container = document.getElementById('operatorActivity');
+
+            if (data.length === 0) {
+                container.innerHTML = '<p class="text-center">No operator data available</p>';
+            } else {
+                const html = `
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Operator</th>
+                                <th>Total Moves</th>
+                                <th>Sharpen Moves</th>
+                                <th>Material Removed</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.map(item => `
+                                <tr>
+                                    <td><strong>${item.operator}</strong></td>
+                                    <td>${item.move_count}</td>
+                                    <td>${item.sharpen_moves}</td>
+                                    <td>${item.total_material_removed ? item.total_material_removed.toFixed(3) + '"' : '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+                container.innerHTML = html;
+            }
+
+            document.getElementById('operatorActivitySection').classList.remove('hidden');
+        }
+
+        async function loadLifespanStats() {
+            const data = await getLifespanStats();
+            const container = document.getElementById('lifespanStats');
+
+            const c = data.completed;
+            const a = data.active;
+
+            const html = `
+                <div class="grid grid-2" style="margin-bottom: 1.5rem;">
+                    <div>
+                        <h4 style="margin: 0 0 0.75rem; color: var(--text-light, #666);">Completed Lifespans</h4>
+                        <div class="grid grid-2">
+                            <div class="stat-card">
+                                <div class="stat-value">${c.completed_lifespans || 0}</div>
+                                <div class="stat-label">Total</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${c.avg_sharpenings ? c.avg_sharpenings.toFixed(1) : 'N/A'}</div>
+                                <div class="stat-label">Avg Sharpenings</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${c.avg_material_removed ? c.avg_material_removed.toFixed(3) + '"' : 'N/A'}</div>
+                                <div class="stat-label">Avg Material Removed</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${c.avg_lifespan_hours ? c.avg_lifespan_hours.toFixed(0) + 'h' : 'N/A'}</div>
+                                <div class="stat-label">Avg Lifespan</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 style="margin: 0 0 0.75rem; color: var(--text-light, #666);">Active Lifespans</h4>
+                        <div class="grid grid-2">
+                            <div class="stat-card">
+                                <div class="stat-value">${a.active_lifespans || 0}</div>
+                                <div class="stat-label">Total</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${a.avg_sharpenings ? a.avg_sharpenings.toFixed(1) : 'N/A'}</div>
+                                <div class="stat-label">Avg Sharpenings</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${a.avg_material_removed ? a.avg_material_removed.toFixed(3) + '"' : 'N/A'}</div>
+                                <div class="stat-label">Avg Material Removed</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${a.avg_percent_used ? a.avg_percent_used.toFixed(0) + '%' : 'N/A'}</div>
+                                <div class="stat-label">Avg Life Used</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            container.innerHTML = html;
+            document.getElementById('lifespanStatsSection').classList.remove('hidden');
+        }
+
+        async function loadMaterialTrends() {
+            const data = await getMaterialTrends(30);
+            const container = document.getElementById('materialTrends');
+
+            if (data.length === 0) {
+                container.innerHTML = '<p class="text-center">No data available for this period</p>';
+            } else {
+                const maxMoves = Math.max(...data.map(d => d.move_count));
+                const html = `
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Moves</th>
+                                <th>Sharpen Moves</th>
+                                <th>Material Removed</th>
+                                <th style="width: 30%;">Activity</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.map(item => {
+                                const pct = maxMoves > 0 ? (item.move_count / maxMoves * 100) : 0;
+                                return `
+                                <tr>
+                                    <td>${formatDate(item.date)}</td>
+                                    <td>${item.move_count}</td>
+                                    <td>${item.sharpen_count}</td>
+                                    <td>${item.total_material_removed ? item.total_material_removed.toFixed(3) + '"' : '-'}</td>
+                                    <td>
+                                        <div style="height:10px; background:#e2e8f0; border-radius:4px; overflow:hidden;">
+                                            <div style="width:${pct}%; height:100%; background:var(--primary-color, #3b82f6); border-radius:4px;"></div>
+                                        </div>
+                                    </td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                `;
+                container.innerHTML = html;
+            }
+
+            document.getElementById('materialTrendsSection').classList.remove('hidden');
         }
 
         function showError(message) {

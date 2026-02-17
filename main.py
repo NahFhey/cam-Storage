@@ -1788,6 +1788,108 @@ async def analytics_refill_forecast(limit: int = 50, db: aiosqlite.Connection = 
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
 
+@app.get("/api/analytics/station-transitions")
+async def analytics_station_transitions(days: int = 30, db: aiosqlite.Connection = Depends(get_db)):
+    """Get move counts grouped by from_station -> to_station transition"""
+    cursor = await db.execute(
+        """
+        SELECT
+            from_station,
+            to_station,
+            COUNT(*) as count
+        FROM moves
+        WHERE undone = 0
+          AND moved_at >= datetime('now', '-' || ? || ' days')
+        GROUP BY from_station, to_station
+        ORDER BY count DESC
+        """,
+        (days,)
+    )
+    transitions = await cursor.fetchall()
+    return [dict(t) for t in transitions]
+
+@app.get("/api/analytics/operator-activity")
+async def analytics_operator_activity(days: int = 30, db: aiosqlite.Connection = Depends(get_db)):
+    """Get move counts and material removed per operator"""
+    cursor = await db.execute(
+        """
+        SELECT
+            COALESCE(operator, 'Unknown') as operator,
+            COUNT(*) as move_count,
+            COALESCE(SUM(material_removed), 0) as total_material_removed,
+            COUNT(CASE WHEN material_removed IS NOT NULL THEN 1 END) as sharpen_moves
+        FROM moves
+        WHERE undone = 0
+          AND moved_at >= datetime('now', '-' || ? || ' days')
+        GROUP BY operator
+        ORDER BY move_count DESC
+        """,
+        (days,)
+    )
+    operators = await cursor.fetchall()
+    return [dict(o) for o in operators]
+
+@app.get("/api/analytics/lifespan-stats")
+async def analytics_lifespan_stats(db: aiosqlite.Connection = Depends(get_db)):
+    """Get tool lifespan analytics: averages, refill frequency, sharpenings per lifespan"""
+    # Completed lifespans (ended_at IS NOT NULL)
+    cursor = await db.execute(
+        """
+        SELECT
+            COUNT(*) as completed_lifespans,
+            AVG(sharpen_count) as avg_sharpenings,
+            AVG(total_material_removed) as avg_material_removed,
+            AVG((julianday(ended_at) - julianday(started_at)) * 24) as avg_lifespan_hours,
+            MIN(sharpen_count) as min_sharpenings,
+            MAX(sharpen_count) as max_sharpenings
+        FROM tool_lifespans
+        WHERE ended_at IS NOT NULL
+        """
+    )
+    completed = dict(await cursor.fetchone())
+
+    # Active lifespans
+    cursor = await db.execute(
+        """
+        SELECT
+            COUNT(*) as active_lifespans,
+            AVG(sharpen_count) as avg_sharpenings,
+            AVG(total_material_removed) as avg_material_removed,
+            AVG(CASE WHEN max_material_life > 0
+                 THEN (total_material_removed / max_material_life) * 100
+                 ELSE 0 END) as avg_percent_used
+        FROM tool_lifespans
+        WHERE ended_at IS NULL
+        """
+    )
+    active = dict(await cursor.fetchone())
+
+    return {
+        "completed": completed,
+        "active": active
+    }
+
+@app.get("/api/analytics/material-trends")
+async def analytics_material_trends(days: int = 30, db: aiosqlite.Connection = Depends(get_db)):
+    """Get daily material removed totals alongside move counts"""
+    cursor = await db.execute(
+        """
+        SELECT
+            DATE(moved_at) as date,
+            COUNT(*) as move_count,
+            COALESCE(SUM(material_removed), 0) as total_material_removed,
+            COUNT(CASE WHEN material_removed IS NOT NULL THEN 1 END) as sharpen_count
+        FROM moves
+        WHERE undone = 0
+          AND moved_at >= datetime('now', '-' || ? || ' days')
+        GROUP BY DATE(moved_at)
+        ORDER BY date
+        """,
+        (days,)
+    )
+    trends = await cursor.fetchall()
+    return [dict(t) for t in trends]
+
 # ========== Configuration Endpoints ==========
 
 @app.get("/api/config")
@@ -1864,8 +1966,9 @@ async def export_cam_items_csv(
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow([
-            's_number', 'set_no', 'cam_no', 'status_station', 'status_updated_at',
-            'enter_die_steel', 'exit_die_steel', 'notes', 'eol_cycles_expected'
+            's_number', 'set_no', 'cam_no', 'die_position', 'status_station', 'status_updated_at',
+            'enter_die_steel', 'exit_die_steel', 'max_material_life', 'eol_cycles_expected',
+            'created_at', 'notes'
         ])
         yield output.getvalue()
 
@@ -1888,9 +1991,10 @@ async def export_cam_items_csv(
             for item in rows:
                 writer.writerow([
                     item['s_number'], item['set_no'], item['cam_no'],
-                    item['status_station'], item['status_updated_at'],
+                    item['die_position'], item['status_station'], item['status_updated_at'],
                     item['enter_die_steel'], item['exit_die_steel'],
-                    item['notes'], item['eol_cycles_expected']
+                    item['max_material_life'], item['eol_cycles_expected'],
+                    item['created_at'], item['notes']
                 ])
             yield output.getvalue()
 
@@ -1911,7 +2015,7 @@ async def export_moves_csv(
         writer = csv.writer(output)
         writer.writerow([
             's_number', 'set_no', 'cam_no', 'from_station', 'to_station',
-            'moved_at', 'operator', 'notes', 'undone'
+            'moved_at', 'operator', 'material_removed', 'notes', 'undone'
         ])
         yield output.getvalue()
 
@@ -1936,7 +2040,8 @@ async def export_moves_csv(
                 writer.writerow([
                     move['s_number'], move['set_no'], move['cam_no'],
                     move['from_station'], move['to_station'],
-                    move['moved_at'], move['operator'], move['notes'], move['undone']
+                    move['moved_at'], move['operator'],
+                    move['material_removed'], move['notes'], move['undone']
                 ])
             yield output.getvalue()
 
@@ -1944,6 +2049,103 @@ async def export_moves_csv(
         generate(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=moves.csv"}
+    )
+
+@app.get("/api/export/tool-lifespans/csv")
+async def export_tool_lifespans_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export tool lifespan history to CSV (requires authentication)"""
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            's_number', 'set_no', 'cam_no', 'lifespan_number',
+            'started_at', 'ended_at', 'sharpen_count', 'total_material_removed',
+            'max_material_life', 'percent_used', 'status'
+        ])
+        yield output.getvalue()
+
+        cursor = await db.execute(
+            """
+            SELECT tl.lifespan_number, tl.started_at, tl.ended_at,
+                   tl.sharpen_count, tl.total_material_removed, tl.max_material_life,
+                   c.set_no, c.cam_no, j.s_number,
+                   CASE WHEN tl.max_material_life > 0
+                        THEN ROUND((tl.total_material_removed / tl.max_material_life) * 100, 1)
+                        ELSE 0 END as percent_used,
+                   CASE WHEN tl.ended_at IS NULL THEN 'active' ELSE 'completed' END as status
+            FROM tool_lifespans tl
+            JOIN cam_items c ON tl.cam_item_id = c.id
+            JOIN jobs j ON c.job_id = j.id
+            ORDER BY j.s_number, c.set_no, c.cam_no, tl.lifespan_number
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for row in rows:
+                writer.writerow([
+                    row['s_number'], row['set_no'], row['cam_no'], row['lifespan_number'],
+                    row['started_at'], row['ended_at'], row['sharpen_count'],
+                    row['total_material_removed'], row['max_material_life'],
+                    row['percent_used'], row['status']
+                ])
+            yield output.getvalue()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=tool_lifespans.csv"}
+    )
+
+@app.get("/api/export/priority-changes/csv")
+async def export_priority_changes_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Export priority change audit log to CSV (requires admin authentication)"""
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            's_number', 'title', 'changed_by', 'old_priority', 'new_priority',
+            'reason', 'source', 'changed_at'
+        ])
+        yield output.getvalue()
+
+        cursor = await db.execute(
+            """
+            SELECT pc.changed_by_username, pc.old_priority, pc.new_priority,
+                   pc.reason, pc.source, pc.changed_at,
+                   j.s_number, j.title
+            FROM priority_changes pc
+            JOIN jobs j ON pc.job_id = j.id
+            ORDER BY pc.changed_at DESC
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for row in rows:
+                writer.writerow([
+                    row['s_number'], row['title'], row['changed_by_username'],
+                    row['old_priority'], row['new_priority'],
+                    row['reason'], row['source'], row['changed_at']
+                ])
+            yield output.getvalue()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=priority_changes.csv"}
     )
 
 @app.get("/api/export/database")
