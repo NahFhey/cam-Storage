@@ -2067,7 +2067,7 @@ async def export_tool_lifespans_csv(
         writer.writerow([
             's_number', 'set_no', 'cam_no', 'lifespan_number',
             'started_at', 'ended_at', 'sharpen_count', 'total_material_removed',
-            'max_material_life', 'percent_used', 'status'
+            'max_material_life', 'percent_used', 'status', 'exclude_from_avg'
         ])
         yield output.getvalue()
 
@@ -2075,6 +2075,7 @@ async def export_tool_lifespans_csv(
             """
             SELECT tl.lifespan_number, tl.started_at, tl.ended_at,
                    tl.sharpen_count, tl.total_material_removed, tl.max_material_life,
+                   tl.exclude_from_avg,
                    c.set_no, c.cam_no, j.s_number,
                    CASE WHEN tl.max_material_life > 0
                         THEN ROUND((tl.total_material_removed / tl.max_material_life) * 100, 1)
@@ -2097,7 +2098,7 @@ async def export_tool_lifespans_csv(
                     row['s_number'], row['set_no'], row['cam_no'], row['lifespan_number'],
                     row['started_at'], row['ended_at'], row['sharpen_count'],
                     row['total_material_removed'], row['max_material_life'],
-                    row['percent_used'], row['status']
+                    row['percent_used'], row['status'], row['exclude_from_avg']
                 ])
             yield output.getvalue()
 
