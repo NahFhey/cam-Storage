@@ -2067,7 +2067,8 @@ async def export_tool_lifespans_csv(
         writer.writerow([
             's_number', 'set_no', 'cam_no', 'lifespan_number',
             'started_at', 'ended_at', 'sharpen_count', 'total_material_removed',
-            'max_material_life', 'percent_used', 'status', 'exclude_from_avg'
+            'max_material_life', 'percent_used', 'status', 'exclude_from_avg',
+            'early_refill_note'
         ])
         yield output.getvalue()
 
@@ -2080,10 +2081,17 @@ async def export_tool_lifespans_csv(
                    CASE WHEN tl.max_material_life > 0
                         THEN ROUND((tl.total_material_removed / tl.max_material_life) * 100, 1)
                         ELSE 0 END as percent_used,
-                   CASE WHEN tl.ended_at IS NULL THEN 'active' ELSE 'completed' END as status
+                   CASE WHEN tl.ended_at IS NULL THEN 'active' ELSE 'completed' END as status,
+                   m.notes as early_refill_note
             FROM tool_lifespans tl
             JOIN cam_items c ON tl.cam_item_id = c.id
             JOIN jobs j ON c.job_id = j.id
+            LEFT JOIN moves m ON (
+                m.cam_item_id = tl.cam_item_id
+                AND m.to_station = 'refill'
+                AND m.notes LIKE 'Early refill:%'
+                AND ABS(julianday(tl.ended_at) - julianday(m.moved_at)) * 86400 < 2
+            )
             ORDER BY j.s_number, c.set_no, c.cam_no, tl.lifespan_number
             """
         )
@@ -2098,7 +2106,8 @@ async def export_tool_lifespans_csv(
                     row['s_number'], row['set_no'], row['cam_no'], row['lifespan_number'],
                     row['started_at'], row['ended_at'], row['sharpen_count'],
                     row['total_material_removed'], row['max_material_life'],
-                    row['percent_used'], row['status'], row['exclude_from_avg']
+                    row['percent_used'], row['status'], row['exclude_from_avg'],
+                    row['early_refill_note'] or ''
                 ])
             yield output.getvalue()
 
@@ -2108,98 +2117,6 @@ async def export_tool_lifespans_csv(
         headers={"Content-Disposition": "attachment; filename=tool_lifespans.csv"}
     )
 
-@app.get("/api/export/tool-summary/csv")
-async def export_tool_summary_csv(
-    db: aiosqlite.Connection = Depends(get_db),
-    user: dict = Depends(get_current_user)
-):
-    """Export tool lifetime summary to CSV — one row per tool with aggregates across all lifecycles"""
-    async def generate():
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            's_number', 'set_no', 'cam_no', 'current_station',
-            'current_lifespan_number', 'total_refills', 'total_sharpenings',
-            'total_material_removed', 'current_cycle_sharpenings',
-            'current_cycle_material_removed', 'current_cycle_percent_used',
-            'max_material_life'
-        ])
-        yield output.getvalue()
-
-        cursor = await db.execute(
-            """
-            SELECT
-                j.s_number,
-                c.set_no,
-                c.cam_no,
-                c.status_station AS current_station,
-                c.max_material_life,
-                COALESCE(
-                    (SELECT tl2.lifespan_number
-                     FROM tool_lifespans tl2
-                     WHERE tl2.cam_item_id = c.id AND tl2.ended_at IS NULL),
-                    MAX(tl.lifespan_number)
-                ) AS current_lifespan_number,
-                MAX(tl.lifespan_number) - 1 AS total_refills,
-                SUM(tl.sharpen_count) AS total_sharpenings,
-                SUM(tl.total_material_removed) AS total_material_removed,
-                COALESCE(
-                    (SELECT tl2.sharpen_count
-                     FROM tool_lifespans tl2
-                     WHERE tl2.cam_item_id = c.id AND tl2.ended_at IS NULL),
-                    0
-                ) AS current_cycle_sharpenings,
-                COALESCE(
-                    (SELECT tl2.total_material_removed
-                     FROM tool_lifespans tl2
-                     WHERE tl2.cam_item_id = c.id AND tl2.ended_at IS NULL),
-                    0.0
-                ) AS current_cycle_material_removed,
-                CASE
-                    WHEN c.max_material_life > 0 THEN
-                        ROUND(
-                            COALESCE(
-                                (SELECT tl2.total_material_removed
-                                 FROM tool_lifespans tl2
-                                 WHERE tl2.cam_item_id = c.id AND tl2.ended_at IS NULL),
-                                0.0
-                            ) / c.max_material_life * 100, 1
-                        )
-                    ELSE 0
-                END AS current_cycle_percent_used
-            FROM cam_items c
-            JOIN jobs j ON c.job_id = j.id
-            LEFT JOIN tool_lifespans tl ON tl.cam_item_id = c.id
-            GROUP BY c.id
-            ORDER BY j.s_number, c.set_no, c.cam_no
-            """
-        )
-        while True:
-            rows = await cursor.fetchmany(500)
-            if not rows:
-                break
-            output = io.StringIO()
-            writer = csv.writer(output)
-            for row in rows:
-                writer.writerow([
-                    row['s_number'], row['set_no'], row['cam_no'],
-                    row['current_station'],
-                    row['current_lifespan_number'] or 0,
-                    max(row['total_refills'] or 0, 0),
-                    row['total_sharpenings'] or 0,
-                    row['total_material_removed'] or 0.0,
-                    row['current_cycle_sharpenings'],
-                    row['current_cycle_material_removed'],
-                    row['current_cycle_percent_used'],
-                    row['max_material_life']
-                ])
-            yield output.getvalue()
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=tool_summary.csv"}
-    )
 
 @app.get("/api/export/priority-changes/csv")
 async def export_priority_changes_csv(
