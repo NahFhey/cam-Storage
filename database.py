@@ -88,6 +88,18 @@ def _get_pool() -> ConnectionPool:
         _pool = ConnectionPool(config.DATABASE_PATH, max_size=5)
     return _pool
 
+
+async def reset_pool():
+    """Close all pooled connections and force new ones on next request.
+
+    Must be called after the database file is replaced (e.g. import)
+    so that stale connections to the old file are discarded.
+    """
+    global _pool
+    if _pool is not None:
+        await _pool.close_all()
+        _pool = None
+
 # SQL schema definition
 SCHEMA_SQL = """
 -- Jobs table: tracks production jobs by S-number
@@ -200,6 +212,25 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
+-- Priority changes audit log: tracks every priority change with reason
+CREATE TABLE IF NOT EXISTS priority_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    changed_by_user_id INTEGER NOT NULL,
+    changed_by_username TEXT NOT NULL,
+    old_priority TEXT NOT NULL,
+    new_priority TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'all_jobs' CHECK(source IN ('all_jobs', 'top5')),
+    changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+    FOREIGN KEY (changed_by_user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_priority_changes_job ON priority_changes(job_id);
+CREATE INDEX IF NOT EXISTS idx_priority_changes_time ON priority_changes(changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_priority_changes_user ON priority_changes(changed_by_user_id);
+
 -- Insert default config values
 INSERT OR IGNORE INTO config (key, value) VALUES ('auto_bump_enabled', 'true');
 INSERT OR IGNORE INTO config (key, value) VALUES ('default_operator', 'kiosk');
@@ -251,14 +282,24 @@ async def get_config_value(key: str, default: str = None, db=None) -> Optional[s
         row = await cursor.fetchone()
         return row['value'] if row else default
 
-async def set_config_value(key: str, value: str):
-    """Set configuration value in database"""
-    async with get_db_connection() as db:
+async def set_config_value(key: str, value: str, db=None):
+    """Set configuration value in database.
+
+    If a db connection is provided, uses it directly (caller must commit).
+    Otherwise opens a new connection and auto-commits.
+    """
+    if db is not None:
         await db.execute(
             "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
             (key, value)
         )
-        await db.commit()
+        return
+    async with get_db_connection() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (key, value)
+        )
+        await conn.commit()
 
 def hash_pin(pin: str) -> str:
     """Hash a PIN with a random salt using PBKDF2"""
@@ -492,6 +533,30 @@ def migrate_database(db_path: str = None):
                 backfill_count += 1
 
         logger.info(f"    Backfilled {backfill_count} lifespan records for {len(cam_ids)} cam items")
+
+    # Check if priority_changes table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='priority_changes'")
+    if not cursor.fetchone():
+        logger.info("  Creating priority_changes table...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS priority_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                changed_by_user_id INTEGER NOT NULL,
+                changed_by_username TEXT NOT NULL,
+                old_priority TEXT NOT NULL,
+                new_priority TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'all_jobs' CHECK(source IN ('all_jobs', 'top5')),
+                changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+                FOREIGN KEY (changed_by_user_id) REFERENCES users(id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_priority_changes_job ON priority_changes(job_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_priority_changes_time ON priority_changes(changed_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_priority_changes_user ON priority_changes(changed_by_user_id)")
+        logger.info("    Created priority_changes table")
 
     conn.commit()
 

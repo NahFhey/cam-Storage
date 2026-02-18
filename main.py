@@ -1,6 +1,7 @@
 """
 FastAPI backend for CAM Tracking Kiosk
 """
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File, status, Request
 from fastapi.staticfiles import StaticFiles
@@ -22,9 +23,9 @@ import os
 
 import time
 import config
-from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin
+from database import get_db, get_config_value, set_config_value, init_database, migrate_database, hash_pin, verify_pin, reset_pool
 from entry_parser import parse_manual_entry, resolve_entry
-from business_logic import move_cam_to_station, undo_last_move, generate_hot_list, get_lifespan_forecast
+from business_logic import move_cam_to_station, undo_last_move, generate_hot_list, generate_all_jobs_ranked, get_lifespan_forecast
 
 
 # ========== Simple TTL Cache ==========
@@ -204,6 +205,8 @@ class JobUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=200)
     priority_level: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=1000)
+    reason: Optional[str] = Field(None, max_length=500, description="Reason for priority change (required when changing priority)")
+    source: Optional[str] = Field("all_jobs", description="Source of priority change: 'all_jobs' or 'top5'")
 
     @field_validator('priority_level')
     @classmethod
@@ -212,6 +215,22 @@ class JobUpdate(BaseModel):
         if v is not None and v not in config.PRIORITY_LEVELS:
             raise ValueError(f'Priority must be one of: {", ".join(config.PRIORITY_LEVELS)}')
         return v
+
+    @field_validator('source')
+    @classmethod
+    def validate_source(cls, v):
+        if v is not None and v not in ('all_jobs', 'top5'):
+            raise ValueError("Source must be 'all_jobs' or 'top5'")
+        return v
+
+
+class Top5UpdateRequest(BaseModel):
+    """Batch update priorities for Top 5 jobs."""
+    jobs: List[Dict] = Field(..., description="List of {job_id, priority_level, reason}")
+
+class Top5ReorderRequest(BaseModel):
+    """Reorder the Top 5 jobs."""
+    job_ids: List[int] = Field(..., description="Ordered list of job IDs (position 1 first)")
 
 class CamItemCreate(BaseModel):
     job_id: int = Field(..., gt=0, description="Job ID")
@@ -731,10 +750,13 @@ async def update_job(
     admin_user: dict = Depends(get_admin_user)
 ):
     """Update a job (requires admin authentication)"""
-    # Verify job exists
-    cursor = await db.execute("SELECT id FROM jobs WHERE id = ?", (job_id,))
-    if not await cursor.fetchone():
+    # Verify job exists and get current priority for audit
+    cursor = await db.execute("SELECT id, priority_level FROM jobs WHERE id = ?", (job_id,))
+    existing_job = await cursor.fetchone()
+    if not existing_job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    old_priority = existing_job['priority_level'] or 'low'
 
     # Build update query safely with explicit field mapping
     update_parts = []
@@ -744,6 +766,18 @@ async def update_job(
         update_parts.append("title = ?")
         values.append(job.title)
     if job.priority_level is not None:
+        # If priority is actually changing, require a reason and log it
+        if old_priority != job.priority_level:
+            if not job.reason or not job.reason.strip():
+                raise HTTPException(status_code=400, detail="Reason is required when changing priority")
+            await db.execute(
+                """INSERT INTO priority_changes
+                   (job_id, changed_by_user_id, changed_by_username, old_priority, new_priority, reason, source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (job_id, admin_user['user_id'], admin_user['username'],
+                 old_priority, job.priority_level, job.reason.strip(),
+                 job.source or 'all_jobs')
+            )
         update_parts.append("priority_level = ?")
         values.append(job.priority_level)
     if job.notes is not None:
@@ -758,6 +792,9 @@ async def update_job(
     query = f"UPDATE jobs SET {', '.join(update_parts)} WHERE id = ?"
     await db.execute(query, values)
     await db.commit()
+
+    # Invalidate hot list cache since priority affects it
+    _cache.invalidate()
 
     cursor = await db.execute("SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE id = ?", (job_id,))
     updated_job = await cursor.fetchone()
@@ -1326,6 +1363,252 @@ async def get_hot_list(db: aiosqlite.Connection = Depends(get_db)):
     _cache.set("hot_list", hot_list)
     return hot_list
 
+# ========== Top 5 Priority Management ==========
+
+@app.get("/api/top5")
+async def get_top5(
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Get Top 5 priority jobs (all jobs eligible), plus all jobs for swap candidates."""
+    all_ranked = await generate_all_jobs_ranked(db)
+
+    # Check for a manually saved order
+    saved_order = await get_config_value("top5_order", db=db)
+    if saved_order:
+        try:
+            ordered_ids = json.loads(saved_order)
+            ranked_map = {item['job_id']: item for item in all_ranked}
+            ordered = [ranked_map[jid] for jid in ordered_ids if jid in ranked_map]
+            # Fill remaining slots from ranked list (for any new jobs not in saved order)
+            seen = {item['job_id'] for item in ordered}
+            for item in all_ranked:
+                if item['job_id'] not in seen and len(ordered) < 5:
+                    ordered.append(item)
+            top5 = ordered[:5]
+        except (json.JSONDecodeError, KeyError):
+            top5 = all_ranked[:5]
+    else:
+        top5 = all_ranked[:5]
+
+    top5_ids = {item['job_id'] for item in top5}
+    remaining = [item for item in all_ranked if item['job_id'] not in top5_ids]
+
+    cursor = await db.execute(
+        "SELECT id, s_number, title, priority_level FROM jobs ORDER BY s_number"
+    )
+    all_jobs = [dict(row) for row in await cursor.fetchall()]
+
+    return {
+        "top5": top5,
+        "remaining_hot_list": remaining,
+        "all_jobs": all_jobs
+    }
+
+
+@app.post("/api/top5/set-priority")
+async def set_top5_priorities(
+    request_body: Top5UpdateRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Batch update priorities for Top 5 jobs with audit logging."""
+    if len(request_body.jobs) > 5:
+        raise HTTPException(status_code=400, detail="Maximum 5 jobs allowed")
+
+    results = []
+    for entry in request_body.jobs:
+        job_id = entry.get("job_id")
+        new_priority = entry.get("priority_level")
+        reason = (entry.get("reason") or "").strip()
+
+        if not job_id or not new_priority:
+            continue
+        if new_priority not in config.PRIORITY_LEVELS:
+            results.append({"job_id": job_id, "error": f"Invalid priority: {new_priority}"})
+            continue
+
+        cursor = await db.execute("SELECT priority_level FROM jobs WHERE id = ?", (job_id,))
+        row = await cursor.fetchone()
+        if not row:
+            results.append({"job_id": job_id, "error": "Job not found"})
+            continue
+
+        old_priority = row['priority_level'] or 'low'
+        if old_priority != new_priority:
+            if not reason:
+                results.append({"job_id": job_id, "error": "Reason required for priority change"})
+                continue
+
+            await db.execute("UPDATE jobs SET priority_level = ? WHERE id = ?", (new_priority, job_id))
+            await db.execute(
+                """INSERT INTO priority_changes
+                   (job_id, changed_by_user_id, changed_by_username, old_priority, new_priority, reason, source)
+                   VALUES (?, ?, ?, ?, ?, ?, 'top5')""",
+                (job_id, admin_user['user_id'], admin_user['username'],
+                 old_priority, new_priority, reason)
+            )
+            results.append({"job_id": job_id, "old": old_priority, "new": new_priority})
+
+    await db.commit()
+    _cache.invalidate()
+    return {"success": True, "changes": results}
+
+
+@app.post("/api/top5/reorder")
+async def reorder_top5(
+    request_body: Top5ReorderRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Save a manual ordering for the Top 5 jobs.
+
+    Priority is tied to position: #1=top, #2=urgent, #3=high, #4=medium, #5=low.
+    Automatically updates each job's priority_level and logs audit entries.
+    """
+    if len(request_body.job_ids) > 5:
+        raise HTTPException(status_code=400, detail="Maximum 5 jobs allowed")
+
+    POSITION_PRIORITIES = ['top', 'urgent', 'high', 'medium', 'low']
+
+    # Save the manual order
+    await set_config_value("top5_order", json.dumps(request_body.job_ids), db=db)
+
+    # Update each job's priority based on its position
+    changes = []
+    for i, job_id in enumerate(request_body.job_ids):
+        new_priority = POSITION_PRIORITIES[i] if i < len(POSITION_PRIORITIES) else 'low'
+
+        cursor = await db.execute("SELECT priority_level FROM jobs WHERE id = ?", (job_id,))
+        row = await cursor.fetchone()
+        if not row:
+            continue
+        old_priority = row['priority_level'] or 'low'
+
+        if old_priority != new_priority:
+            await db.execute(
+                "UPDATE jobs SET priority_level = ? WHERE id = ?",
+                (new_priority, job_id)
+            )
+            await db.execute(
+                """INSERT INTO priority_changes
+                   (job_id, changed_by_user_id, changed_by_username, old_priority, new_priority, reason, source)
+                   VALUES (?, ?, ?, ?, ?, ?, 'top5')""",
+                (job_id, admin_user['user_id'], admin_user['username'],
+                 old_priority, new_priority, 'Reordered in Top 5')
+            )
+            changes.append({"job_id": job_id, "old": old_priority, "new": new_priority})
+
+    await db.commit()
+    _cache.invalidate()
+    logger.info(f"Admin '{admin_user['username']}' reordered Top 5: {request_body.job_ids} ({len(changes)} priority changes)")
+    return {"success": True, "order": request_body.job_ids, "priority_changes": changes}
+
+
+@app.get("/api/priority-changes")
+async def get_priority_changes(
+    job_id: Optional[int] = None,
+    limit: int = 50,
+    skip: int = 0,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Get priority change audit log, optionally filtered by job."""
+    conditions = []
+    params = []
+    if job_id is not None:
+        conditions.append("pc.job_id = ?")
+        params.append(job_id)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    query = f"""
+        SELECT pc.id, pc.job_id, pc.changed_by_user_id, pc.changed_by_username,
+               pc.old_priority, pc.new_priority, pc.reason, pc.source, pc.changed_at,
+               j.s_number, j.title
+        FROM priority_changes pc
+        JOIN jobs j ON pc.job_id = j.id
+        {where}
+        ORDER BY pc.changed_at DESC
+        LIMIT ? OFFSET ?
+    """
+    cursor = await db.execute(query, params + [limit, skip])
+    changes = [dict(row) for row in await cursor.fetchall()]
+
+    count_query = f"SELECT COUNT(*) as total FROM priority_changes pc {where}"
+    cursor = await db.execute(count_query, params)
+    total = (await cursor.fetchone())['total']
+
+    return {"items": changes, "total": total}
+
+
+@app.get("/api/priority-changes/analytics")
+async def get_priority_analytics(
+    days: int = 30,
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Get priority change analytics: trends, most-escalated jobs, frequency."""
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+    # Changes per day
+    cursor = await db.execute("""
+        SELECT DATE(changed_at) as day, COUNT(*) as count
+        FROM priority_changes
+        WHERE changed_at >= ?
+        GROUP BY DATE(changed_at)
+        ORDER BY day
+    """, (cutoff,))
+    daily_counts = [dict(row) for row in await cursor.fetchall()]
+
+    # Most escalated jobs
+    cursor = await db.execute("""
+        SELECT j.id, j.s_number, j.title, j.priority_level,
+               COUNT(*) as change_count,
+               COUNT(CASE WHEN pc.new_priority IN ('urgent', 'top') THEN 1 END) as escalation_count
+        FROM priority_changes pc
+        JOIN jobs j ON pc.job_id = j.id
+        WHERE pc.changed_at >= ?
+        GROUP BY pc.job_id
+        ORDER BY escalation_count DESC, change_count DESC
+        LIMIT 10
+    """, (cutoff,))
+    most_changed = [dict(row) for row in await cursor.fetchall()]
+
+    # Priority transition matrix
+    cursor = await db.execute("""
+        SELECT old_priority, new_priority, COUNT(*) as count
+        FROM priority_changes
+        WHERE changed_at >= ?
+        GROUP BY old_priority, new_priority
+        ORDER BY count DESC
+    """, (cutoff,))
+    transitions = [dict(row) for row in await cursor.fetchall()]
+
+    # Changes by source
+    cursor = await db.execute("""
+        SELECT source, COUNT(*) as count
+        FROM priority_changes
+        WHERE changed_at >= ?
+        GROUP BY source
+    """, (cutoff,))
+    by_source = [dict(row) for row in await cursor.fetchall()]
+
+    # Total changes
+    cursor = await db.execute(
+        "SELECT COUNT(*) as total FROM priority_changes WHERE changed_at >= ?", (cutoff,)
+    )
+    total = (await cursor.fetchone())['total']
+
+    return {
+        "period_days": days,
+        "total_changes": total,
+        "daily_counts": daily_counts,
+        "most_changed_jobs": most_changed,
+        "transitions": transitions,
+        "by_source": by_source
+    }
+
 # ========== Search Endpoint ==========
 
 @app.get("/api/search")
@@ -1505,6 +1788,108 @@ async def analytics_refill_forecast(limit: int = 50, db: aiosqlite.Connection = 
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
 
+@app.get("/api/analytics/station-transitions")
+async def analytics_station_transitions(days: int = 30, db: aiosqlite.Connection = Depends(get_db)):
+    """Get move counts grouped by from_station -> to_station transition"""
+    cursor = await db.execute(
+        """
+        SELECT
+            from_station,
+            to_station,
+            COUNT(*) as count
+        FROM moves
+        WHERE undone = 0
+          AND moved_at >= datetime('now', '-' || ? || ' days')
+        GROUP BY from_station, to_station
+        ORDER BY count DESC
+        """,
+        (days,)
+    )
+    transitions = await cursor.fetchall()
+    return [dict(t) for t in transitions]
+
+@app.get("/api/analytics/operator-activity")
+async def analytics_operator_activity(days: int = 30, db: aiosqlite.Connection = Depends(get_db)):
+    """Get move counts and material removed per operator"""
+    cursor = await db.execute(
+        """
+        SELECT
+            COALESCE(operator, 'Unknown') as operator,
+            COUNT(*) as move_count,
+            COALESCE(SUM(material_removed), 0) as total_material_removed,
+            COUNT(CASE WHEN material_removed IS NOT NULL THEN 1 END) as sharpen_moves
+        FROM moves
+        WHERE undone = 0
+          AND moved_at >= datetime('now', '-' || ? || ' days')
+        GROUP BY operator
+        ORDER BY move_count DESC
+        """,
+        (days,)
+    )
+    operators = await cursor.fetchall()
+    return [dict(o) for o in operators]
+
+@app.get("/api/analytics/lifespan-stats")
+async def analytics_lifespan_stats(db: aiosqlite.Connection = Depends(get_db)):
+    """Get tool lifespan analytics: averages, refill frequency, sharpenings per lifespan"""
+    # Completed lifespans (ended_at IS NOT NULL)
+    cursor = await db.execute(
+        """
+        SELECT
+            COUNT(*) as completed_lifespans,
+            AVG(sharpen_count) as avg_sharpenings,
+            AVG(total_material_removed) as avg_material_removed,
+            AVG((julianday(ended_at) - julianday(started_at)) * 24) as avg_lifespan_hours,
+            MIN(sharpen_count) as min_sharpenings,
+            MAX(sharpen_count) as max_sharpenings
+        FROM tool_lifespans
+        WHERE ended_at IS NOT NULL
+        """
+    )
+    completed = dict(await cursor.fetchone())
+
+    # Active lifespans
+    cursor = await db.execute(
+        """
+        SELECT
+            COUNT(*) as active_lifespans,
+            AVG(sharpen_count) as avg_sharpenings,
+            AVG(total_material_removed) as avg_material_removed,
+            AVG(CASE WHEN max_material_life > 0
+                 THEN (total_material_removed / max_material_life) * 100
+                 ELSE 0 END) as avg_percent_used
+        FROM tool_lifespans
+        WHERE ended_at IS NULL
+        """
+    )
+    active = dict(await cursor.fetchone())
+
+    return {
+        "completed": completed,
+        "active": active
+    }
+
+@app.get("/api/analytics/material-trends")
+async def analytics_material_trends(days: int = 30, db: aiosqlite.Connection = Depends(get_db)):
+    """Get daily material removed totals alongside move counts"""
+    cursor = await db.execute(
+        """
+        SELECT
+            DATE(moved_at) as date,
+            COUNT(*) as move_count,
+            COALESCE(SUM(material_removed), 0) as total_material_removed,
+            COUNT(CASE WHEN material_removed IS NOT NULL THEN 1 END) as sharpen_count
+        FROM moves
+        WHERE undone = 0
+          AND moved_at >= datetime('now', '-' || ? || ' days')
+        GROUP BY DATE(moved_at)
+        ORDER BY date
+        """,
+        (days,)
+    )
+    trends = await cursor.fetchall()
+    return [dict(t) for t in trends]
+
 # ========== Configuration Endpoints ==========
 
 @app.get("/api/config")
@@ -1581,8 +1966,9 @@ async def export_cam_items_csv(
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow([
-            's_number', 'set_no', 'cam_no', 'status_station', 'status_updated_at',
-            'enter_die_steel', 'exit_die_steel', 'notes', 'eol_cycles_expected'
+            's_number', 'set_no', 'cam_no', 'die_position', 'status_station', 'status_updated_at',
+            'enter_die_steel', 'exit_die_steel', 'max_material_life', 'eol_cycles_expected',
+            'created_at', 'notes'
         ])
         yield output.getvalue()
 
@@ -1605,9 +1991,10 @@ async def export_cam_items_csv(
             for item in rows:
                 writer.writerow([
                     item['s_number'], item['set_no'], item['cam_no'],
-                    item['status_station'], item['status_updated_at'],
+                    item['die_position'], item['status_station'], item['status_updated_at'],
                     item['enter_die_steel'], item['exit_die_steel'],
-                    item['notes'], item['eol_cycles_expected']
+                    item['max_material_life'], item['eol_cycles_expected'],
+                    item['created_at'], item['notes']
                 ])
             yield output.getvalue()
 
@@ -1628,7 +2015,7 @@ async def export_moves_csv(
         writer = csv.writer(output)
         writer.writerow([
             's_number', 'set_no', 'cam_no', 'from_station', 'to_station',
-            'moved_at', 'operator', 'notes', 'undone'
+            'moved_at', 'operator', 'material_removed', 'notes', 'undone'
         ])
         yield output.getvalue()
 
@@ -1653,7 +2040,8 @@ async def export_moves_csv(
                 writer.writerow([
                     move['s_number'], move['set_no'], move['cam_no'],
                     move['from_station'], move['to_station'],
-                    move['moved_at'], move['operator'], move['notes'], move['undone']
+                    move['moved_at'], move['operator'],
+                    move['material_removed'], move['notes'], move['undone']
                 ])
             yield output.getvalue()
 
@@ -1661,6 +2049,196 @@ async def export_moves_csv(
         generate(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=moves.csv"}
+    )
+
+@app.get("/api/export/tool-lifespans/csv")
+async def export_tool_lifespans_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export tool lifespan history to CSV (requires authentication)"""
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            's_number', 'set_no', 'cam_no', 'lifespan_number',
+            'started_at', 'ended_at', 'sharpen_count', 'total_material_removed',
+            'max_material_life', 'percent_used', 'status'
+        ])
+        yield output.getvalue()
+
+        cursor = await db.execute(
+            """
+            SELECT tl.lifespan_number, tl.started_at, tl.ended_at,
+                   tl.sharpen_count, tl.total_material_removed, tl.max_material_life,
+                   c.set_no, c.cam_no, j.s_number,
+                   CASE WHEN tl.max_material_life > 0
+                        THEN ROUND((tl.total_material_removed / tl.max_material_life) * 100, 1)
+                        ELSE 0 END as percent_used,
+                   CASE WHEN tl.ended_at IS NULL THEN 'active' ELSE 'completed' END as status
+            FROM tool_lifespans tl
+            JOIN cam_items c ON tl.cam_item_id = c.id
+            JOIN jobs j ON c.job_id = j.id
+            ORDER BY j.s_number, c.set_no, c.cam_no, tl.lifespan_number
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for row in rows:
+                writer.writerow([
+                    row['s_number'], row['set_no'], row['cam_no'], row['lifespan_number'],
+                    row['started_at'], row['ended_at'], row['sharpen_count'],
+                    row['total_material_removed'], row['max_material_life'],
+                    row['percent_used'], row['status']
+                ])
+            yield output.getvalue()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=tool_lifespans.csv"}
+    )
+
+@app.get("/api/export/tool-summary/csv")
+async def export_tool_summary_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """Export tool lifetime summary to CSV — one row per tool with aggregates across all lifecycles"""
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            's_number', 'set_no', 'cam_no', 'current_station',
+            'current_lifespan_number', 'total_refills', 'total_sharpenings',
+            'total_material_removed', 'current_cycle_sharpenings',
+            'current_cycle_material_removed', 'current_cycle_percent_used',
+            'max_material_life'
+        ])
+        yield output.getvalue()
+
+        cursor = await db.execute(
+            """
+            SELECT
+                j.s_number,
+                c.set_no,
+                c.cam_no,
+                c.status_station AS current_station,
+                c.max_material_life,
+                COALESCE(
+                    (SELECT tl2.lifespan_number
+                     FROM tool_lifespans tl2
+                     WHERE tl2.cam_item_id = c.id AND tl2.ended_at IS NULL),
+                    MAX(tl.lifespan_number)
+                ) AS current_lifespan_number,
+                MAX(tl.lifespan_number) - 1 AS total_refills,
+                SUM(tl.sharpen_count) AS total_sharpenings,
+                SUM(tl.total_material_removed) AS total_material_removed,
+                COALESCE(
+                    (SELECT tl2.sharpen_count
+                     FROM tool_lifespans tl2
+                     WHERE tl2.cam_item_id = c.id AND tl2.ended_at IS NULL),
+                    0
+                ) AS current_cycle_sharpenings,
+                COALESCE(
+                    (SELECT tl2.total_material_removed
+                     FROM tool_lifespans tl2
+                     WHERE tl2.cam_item_id = c.id AND tl2.ended_at IS NULL),
+                    0.0
+                ) AS current_cycle_material_removed,
+                CASE
+                    WHEN c.max_material_life > 0 THEN
+                        ROUND(
+                            COALESCE(
+                                (SELECT tl2.total_material_removed
+                                 FROM tool_lifespans tl2
+                                 WHERE tl2.cam_item_id = c.id AND tl2.ended_at IS NULL),
+                                0.0
+                            ) / c.max_material_life * 100, 1
+                        )
+                    ELSE 0
+                END AS current_cycle_percent_used
+            FROM cam_items c
+            JOIN jobs j ON c.job_id = j.id
+            LEFT JOIN tool_lifespans tl ON tl.cam_item_id = c.id
+            GROUP BY c.id
+            ORDER BY j.s_number, c.set_no, c.cam_no
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for row in rows:
+                writer.writerow([
+                    row['s_number'], row['set_no'], row['cam_no'],
+                    row['current_station'],
+                    row['current_lifespan_number'] or 0,
+                    max(row['total_refills'] or 0, 0),
+                    row['total_sharpenings'] or 0,
+                    row['total_material_removed'] or 0.0,
+                    row['current_cycle_sharpenings'],
+                    row['current_cycle_material_removed'],
+                    row['current_cycle_percent_used'],
+                    row['max_material_life']
+                ])
+            yield output.getvalue()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=tool_summary.csv"}
+    )
+
+@app.get("/api/export/priority-changes/csv")
+async def export_priority_changes_csv(
+    db: aiosqlite.Connection = Depends(get_db),
+    admin_user: dict = Depends(get_admin_user)
+):
+    """Export priority change audit log to CSV (requires admin authentication)"""
+    async def generate():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            's_number', 'title', 'changed_by', 'old_priority', 'new_priority',
+            'reason', 'source', 'changed_at'
+        ])
+        yield output.getvalue()
+
+        cursor = await db.execute(
+            """
+            SELECT pc.changed_by_username, pc.old_priority, pc.new_priority,
+                   pc.reason, pc.source, pc.changed_at,
+                   j.s_number, j.title
+            FROM priority_changes pc
+            JOIN jobs j ON pc.job_id = j.id
+            ORDER BY pc.changed_at DESC
+            """
+        )
+        while True:
+            rows = await cursor.fetchmany(500)
+            if not rows:
+                break
+            output = io.StringIO()
+            writer = csv.writer(output)
+            for row in rows:
+                writer.writerow([
+                    row['s_number'], row['title'], row['changed_by_username'],
+                    row['old_priority'], row['new_priority'],
+                    row['reason'], row['source'], row['changed_at']
+                ])
+            yield output.getvalue()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=priority_changes.csv"}
     )
 
 @app.get("/api/export/database")
@@ -1768,6 +2346,13 @@ async def import_database(
             # after this operation. The frontend triggers a page reload to recover.
             logger.warning(f"Admin '{admin_user['username']}' replacing database file — active connections will be invalidated")
             shutil.move(temp_path, config.DATABASE_PATH)
+
+            # Flush the connection pool so stale connections to the old file are discarded
+            await reset_pool()
+
+            # Run migrations on the imported database to ensure new tables exist
+            # (e.g. priority_changes table added after the backup was created)
+            migrate_database()
 
             # Sessions are in the replaced database — they'll be cleared naturally
 

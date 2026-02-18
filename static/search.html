@@ -127,7 +127,7 @@
                                 <tr>
                                     <td><strong>S${job.s_number}</strong></td>
                                     <td>${job.title || '-'}</td>
-                                    <td>${job.priority_base}</td>
+                                    <td>${job.priority_level || 'low'}</td>
                                     <td>${formatDate(job.created_at)}</td>
                                     <td>
                                         <a href="/static/job-detail.html?id=${job.id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
@@ -164,7 +164,6 @@
                         <thead>
                             <tr>
                                 <th>Tool</th>
-                                <th>Job</th>
                                 <th>Station</th>
                                 <th>Last Update</th>
                                 <th>Action</th>
@@ -176,7 +175,6 @@
                                 return `
                                     <tr>
                                         <td><strong>S${job ? job.s_number : cam.job_id} Set${cam.set_no} Cam${cam.cam_no}</strong></td>
-                                        <td>${job ? job.title || '-' : '-'}</td>
                                         <td>
                                             <span class="badge ${getStationBadgeClass(cam.status_station)}">
                                                 ${formatStation(cam.status_station)}

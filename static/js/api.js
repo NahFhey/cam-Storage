@@ -253,6 +253,34 @@ async function getHotList() {
     return apiCall('/hot-list');
 }
 
+// Top 5 Priority Management
+async function getTop5() {
+    return apiCall('/top5');
+}
+
+async function setTop5Priorities(jobs) {
+    return apiCall('/top5/set-priority', {
+        method: 'POST',
+        body: JSON.stringify({ jobs })
+    });
+}
+
+async function reorderTop5(jobIds) {
+    return apiCall('/top5/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ job_ids: jobIds })
+    });
+}
+
+async function getPriorityChanges(filters = {}) {
+    const params = new URLSearchParams(filters);
+    return apiCall(`/priority-changes?${params}`);
+}
+
+async function getPriorityAnalytics(days = 30) {
+    return apiCall(`/priority-changes/analytics?days=${days}`);
+}
+
 // Search
 async function search(query) {
     const params = new URLSearchParams({ q: query });
@@ -282,6 +310,22 @@ async function getSharpenBacklog() {
 
 async function getRefillForecast(limit = 50) {
     return apiCall(`/analytics/refill-forecast?limit=${limit}`);
+}
+
+async function getStationTransitions(days = 30) {
+    return apiCall(`/analytics/station-transitions?days=${days}`);
+}
+
+async function getOperatorActivity(days = 30) {
+    return apiCall(`/analytics/operator-activity?days=${days}`);
+}
+
+async function getLifespanStats() {
+    return apiCall('/analytics/lifespan-stats');
+}
+
+async function getMaterialTrends(days = 30) {
+    return apiCall(`/analytics/material-trends?days=${days}`);
 }
 
 // Lifespan
@@ -325,6 +369,18 @@ async function exportCamItemsCSV() {
 
 async function exportMovesCSV() {
     await _downloadFile('/export/moves/csv', 'moves.csv');
+}
+
+async function exportToolLifespansCSV() {
+    await _downloadFile('/export/tool-lifespans/csv', 'tool_lifespans.csv');
+}
+
+async function exportToolSummaryCSV() {
+    await _downloadFile('/export/tool-summary/csv', 'tool_summary.csv');
+}
+
+async function exportPriorityChangesCSV() {
+    await _downloadFile('/export/priority-changes/csv', 'priority_changes.csv');
 }
 
 async function exportDatabase() {

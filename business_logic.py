@@ -450,6 +450,102 @@ async def generate_hot_list(db) -> List[Dict]:
     return hot_list
 
 
+async def generate_all_jobs_ranked(db) -> List[Dict]:
+    """
+    Generate a ranked list of ALL jobs for Top 5 selection.
+
+    Unlike generate_hot_list, this includes every job regardless of
+    whether it has cams in sharpen. Uses the same priority scoring.
+    """
+    cursor = await db.execute("""
+        WITH job_stats AS (
+            SELECT
+                j.id,
+                j.s_number,
+                j.title,
+                j.priority_level,
+                COUNT(c.id) as total_count,
+                COUNT(DISTINCT CASE WHEN c.status_station NOT IN ('refill', 'sharpen') THEN c.set_no END) as available_sets,
+                COUNT(CASE WHEN c.status_station = 'active' THEN 1 END) as active_count,
+                COUNT(CASE WHEN c.status_station = 'sharpen' THEN 1 END) as sharpen_count,
+                COUNT(CASE WHEN c.status_station = 'cabinet' THEN 1 END) as cabinet_count,
+                COUNT(CASE WHEN c.status_station = 'refill' THEN 1 END) as refill_count,
+                MIN(c.status_updated_at) as oldest_update
+            FROM jobs j
+            LEFT JOIN cam_items c ON j.id = c.job_id
+            GROUP BY j.id
+        ),
+        complete_active_sets AS (
+            SELECT DISTINCT job_id
+            FROM cam_items
+            GROUP BY job_id, set_no
+            HAVING COUNT(*) = COUNT(CASE WHEN status_station = 'active' THEN 1 END)
+               AND COUNT(*) > 0
+        ),
+        blocked_positions AS (
+            SELECT DISTINCT job_id
+            FROM cam_items
+            GROUP BY job_id, cam_no
+            HAVING COUNT(*) = COUNT(CASE WHEN status_station IN ('refill', 'sharpen') THEN 1 END)
+               AND COUNT(*) > 0
+        )
+        SELECT
+            js.*,
+            CASE WHEN cas.job_id IS NOT NULL THEN 1 ELSE 0 END as has_complete_active_set,
+            CASE WHEN bp.job_id IS NOT NULL THEN 1 ELSE 0 END as has_blocked_position
+        FROM job_stats js
+        LEFT JOIN complete_active_sets cas ON js.id = cas.job_id
+        LEFT JOIN blocked_positions bp ON js.id = bp.job_id
+    """)
+    jobs = await cursor.fetchall()
+
+    ranked = []
+    for job in jobs:
+        job_dict = dict(job)
+
+        all_in_sharpen = (job_dict['total_count'] > 0 and
+                         job_dict['sharpen_count'] == job_dict['total_count'])
+
+        no_cabinet_with_active_set = (
+            job_dict['cabinet_count'] == 0 and
+            job_dict['active_count'] > 0 and
+            job_dict['has_complete_active_set'] == 1
+        )
+
+        has_blocked_position = job_dict['has_blocked_position'] == 1
+
+        base_priority, priority_score, label = calculate_priority(
+            available_sets=job_dict['available_sets'],
+            refill_count=job_dict['refill_count'],
+            priority_level=job_dict['priority_level'] or 'low',
+            all_in_sharpen=all_in_sharpen,
+            no_cabinet_with_active_set=no_cabinet_with_active_set,
+            has_blocked_position=has_blocked_position
+        )
+
+        ranked.append({
+            "job_id": job_dict['id'],
+            "s_number": job_dict['s_number'],
+            "title": job_dict['title'],
+            "priority_level": job_dict['priority_level'],
+            "base_priority": base_priority,
+            "priority_score": priority_score,
+            "priority_label": label,
+            "all_in_sharpen": all_in_sharpen,
+            "has_blocked_position": has_blocked_position,
+            "available_sets": job_dict['available_sets'],
+            "active_count": job_dict['active_count'],
+            "sharpen_count": job_dict['sharpen_count'],
+            "cabinet_count": job_dict['cabinet_count'],
+            "refill_count": job_dict['refill_count'],
+            "oldest_update": job_dict['oldest_update']
+        })
+
+    ranked.sort(key=lambda x: (-x['priority_score'], -x['base_priority']))
+
+    return ranked
+
+
 # ========== Tool Lifespan Management ==========
 
 async def get_active_lifespan(db, cam_item_id: int) -> Optional[Dict]:
