@@ -152,7 +152,7 @@
                     <textarea
                         id="earlyRefillNote"
                         class="form-input"
-                        placeholder="e.g., Chipped edge, wrong grind, prototype run..."
+                        placeholder="Reason for early refill"
                         rows="3"
                         style="width: 100%; font-size: 1rem;"
                         maxlength="500"
@@ -164,7 +164,7 @@
                         <span>Exclude this lifecycle from the normal average</span>
                     </label>
                     <p style="margin: 0.25rem 0 0 1.75rem; font-size: 0.85rem; color: #6b7280;">
-                        Recommended if this was an abnormal lifecycle (prototype, damage, etc.)
+                        Recommended if this was an abnormal lifecycle
                     </p>
                 </div>
                 <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
@@ -587,7 +587,7 @@
                         earlyRefillNote.placeholder = 'A reason is required for early refill';
                         setTimeout(() => {
                             earlyRefillNote.style.borderColor = '';
-                            earlyRefillNote.placeholder = 'e.g., Chipped edge, wrong grind, prototype run...';
+                            earlyRefillNote.placeholder = 'Reason for early refill';
                         }, 2000);
                         return;
                     }
