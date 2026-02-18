@@ -20,7 +20,8 @@ async def move_cam_to_station(
     operator: str = None,
     notes: str = None,
     auto_bump: bool = None,
-    material_removed: float = None
+    material_removed: float = None,
+    exclude_from_avg: bool = False
 ) -> Dict:
     """
     Move a CAM item to a new station.
@@ -141,7 +142,7 @@ async def move_cam_to_station(
         if from_station == 'sharpen' and to_station == 'cabinet' and material_removed:
             await update_lifespan_on_sharpen(db, cam_item_id, material_removed)
         if to_station == 'refill':
-            await close_lifespan_on_refill(db, cam_item_id)
+            await close_lifespan_on_refill(db, cam_item_id, exclude_from_avg=exclude_from_avg)
         if from_station == 'refill' and to_station != 'refill':
             await open_new_lifespan(db, cam_item_id)
     except Exception as e:
@@ -229,10 +230,10 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
                     (new_total, new_count, active_ls['id'])
                 )
 
-        # Undo move-to-refill: reopen the closed lifespan
+        # Undo move-to-refill: reopen the closed lifespan and reset exclude flag
         if undone_to == 'refill':
             await db.execute(
-                """UPDATE tool_lifespans SET ended_at = NULL
+                """UPDATE tool_lifespans SET ended_at = NULL, exclude_from_avg = 0
                    WHERE cam_item_id = ? AND ended_at IS NOT NULL
                    AND lifespan_number = (
                        SELECT MAX(lifespan_number) FROM tool_lifespans
@@ -552,7 +553,7 @@ async def get_active_lifespan(db, cam_item_id: int) -> Optional[Dict]:
     """Get the current active lifespan for a tool (ended_at IS NULL)."""
     cursor = await db.execute(
         """SELECT id, cam_item_id, lifespan_number, started_at, ended_at,
-               total_material_removed, sharpen_count, max_material_life
+               total_material_removed, sharpen_count, max_material_life, exclude_from_avg
         FROM tool_lifespans
            WHERE cam_item_id = ? AND ended_at IS NULL
            ORDER BY lifespan_number DESC LIMIT 1""",
@@ -560,6 +561,47 @@ async def get_active_lifespan(db, cam_item_id: int) -> Optional[Dict]:
     )
     row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+async def calculate_expected_life(db, cam_item_id: int) -> float:
+    """
+    Calculate expected life as the rolling average of total_material_removed
+    over the last 3 completed, non-excluded lifespans.
+
+    When fewer than 3 non-excluded completed lifespans exist, pad with the
+    cam's max_material_life (the initial seed value set at creation).
+
+    Returns the expected life value in inches.
+    """
+    # Get the cam's seed value (initial max_material_life)
+    cursor = await db.execute(
+        "SELECT COALESCE(max_material_life, 0.375) as seed_life FROM cam_items WHERE id = ?",
+        (cam_item_id,)
+    )
+    cam = await cursor.fetchone()
+    seed_life = cam['seed_life'] if cam else 0.375
+
+    # Get last 3 completed, non-excluded lifespans
+    cursor = await db.execute(
+        """SELECT total_material_removed
+           FROM tool_lifespans
+           WHERE cam_item_id = ?
+             AND ended_at IS NOT NULL
+             AND exclude_from_avg = 0
+           ORDER BY lifespan_number DESC
+           LIMIT 3""",
+        (cam_item_id,)
+    )
+    rows = await cursor.fetchall()
+
+    # Collect actual values
+    values = [row['total_material_removed'] for row in rows]
+
+    # Pad with seed value up to 3
+    while len(values) < 3:
+        values.append(seed_life)
+
+    return round(sum(values) / len(values), 4)
 
 
 async def update_lifespan_on_sharpen(db, cam_item_id: int, material_removed: float):
@@ -591,24 +633,35 @@ async def update_lifespan_on_sharpen(db, cam_item_id: int, material_removed: flo
 
         await db.execute(
             """INSERT INTO tool_lifespans
-               (cam_item_id, lifespan_number, total_material_removed, sharpen_count, max_material_life)
-               VALUES (?, ?, ?, 1, ?)""",
+               (cam_item_id, lifespan_number, total_material_removed, sharpen_count, max_material_life, exclude_from_avg)
+               VALUES (?, ?, ?, 1, ?, 0)""",
             (cam_item_id, next_num, material_removed, max_life)
         )
 
 
-async def close_lifespan_on_refill(db, cam_item_id: int):
-    """Close the active lifespan when a tool moves to refill."""
+async def close_lifespan_on_refill(db, cam_item_id: int, exclude_from_avg: bool = False):
+    """Close the active lifespan when a tool moves to refill.
+
+    Args:
+        exclude_from_avg: If True, marks this lifespan as excluded from
+                          the rolling average calculation (e.g., early refill).
+    """
     await db.execute(
         """UPDATE tool_lifespans
-           SET ended_at = CURRENT_TIMESTAMP
+           SET ended_at = CURRENT_TIMESTAMP,
+               exclude_from_avg = ?
            WHERE cam_item_id = ? AND ended_at IS NULL""",
-        (cam_item_id,)
+        (1 if exclude_from_avg else 0, cam_item_id)
     )
 
 
 async def open_new_lifespan(db, cam_item_id: int):
-    """Open a new lifespan when a tool returns from refill."""
+    """Open a new lifespan when a tool returns from refill.
+
+    The new lifespan's max_material_life is set to the rolling average
+    of the last 3 completed, non-excluded lifespans (padded with the
+    cam's initial seed value if fewer than 3 exist).
+    """
     cursor = await db.execute(
         "SELECT COALESCE(MAX(lifespan_number), 0) + 1 as next_num FROM tool_lifespans WHERE cam_item_id = ?",
         (cam_item_id,)
@@ -616,18 +669,14 @@ async def open_new_lifespan(db, cam_item_id: int):
     row = await cursor.fetchone()
     next_num = row['next_num']
 
-    cursor = await db.execute(
-        "SELECT COALESCE(max_material_life, 0.375) as life FROM cam_items WHERE id = ?",
-        (cam_item_id,)
-    )
-    cam = await cursor.fetchone()
-    max_life = cam['life'] if cam else 0.375
+    # Use rolling average instead of static cam_items.max_material_life
+    expected_life = await calculate_expected_life(db, cam_item_id)
 
     await db.execute(
         """INSERT INTO tool_lifespans
            (cam_item_id, lifespan_number, max_material_life)
            VALUES (?, ?, ?)""",
-        (cam_item_id, next_num, max_life)
+        (cam_item_id, next_num, expected_life)
     )
 
 
@@ -651,20 +700,21 @@ async def get_lifespan_forecast(db, cam_item_id: int) -> Dict:
     cam = await cursor.fetchone()
     default_life = cam['life'] if cam else 0.375
 
-    # Get last 3 completed lifespans
+    # Get last 3 completed, non-excluded lifespans (for forecast calculations)
     cursor = await db.execute(
-        """SELECT lifespan_number, total_material_removed, sharpen_count, started_at, ended_at
+        """SELECT lifespan_number, total_material_removed, sharpen_count,
+                  started_at, ended_at, exclude_from_avg
            FROM tool_lifespans
-           WHERE cam_item_id = ? AND ended_at IS NOT NULL
+           WHERE cam_item_id = ? AND ended_at IS NOT NULL AND exclude_from_avg = 0
            ORDER BY lifespan_number DESC
            LIMIT 3""",
         (cam_item_id,)
     )
     completed = [dict(r) for r in await cursor.fetchall()]
 
-    # Count total completed lifespans
+    # Count total completed non-excluded lifespans
     cursor = await db.execute(
-        "SELECT COUNT(*) as cnt FROM tool_lifespans WHERE cam_item_id = ? AND ended_at IS NOT NULL",
+        "SELECT COUNT(*) as cnt FROM tool_lifespans WHERE cam_item_id = ? AND ended_at IS NOT NULL AND exclude_from_avg = 0",
         (cam_item_id,)
     )
     completed_count = (await cursor.fetchone())['cnt']
@@ -744,8 +794,12 @@ async def get_lifespan_forecast(db, cam_item_id: int) -> Dict:
     avg_sharpenings = round(sum(hist_sharpen_counts) / len(hist_sharpen_counts), 1)
     avg_total = round(sum(hist_total_removed) / len(hist_total_removed), 3)
 
+    # Calculate the dynamic expected life (rolling average of last 3 non-excluded cycles)
+    expected_life = await calculate_expected_life(db, cam_item_id)
+
     return {
         "current_lifespan": current_info,
+        "expected_life": expected_life,
         "forecast": {
             "avg_removal_per_sharpen": round(avg_per_sharpen, 4) if avg_per_sharpen else None,
             "estimated_sharpenings_remaining": est_remaining,

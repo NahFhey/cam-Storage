@@ -135,6 +135,48 @@
                 </div>
             </div>
         </div>
+
+        <!-- Early Refill Modal -->
+        <div id="earlyRefillModal" class="modal hidden">
+            <div class="modal-content">
+                <h3 class="card-header">Early Refill</h3>
+                <p style="margin: 1rem 0; color: #666;">
+                    This tool still has significant life remaining. Please explain why you are refilling early.
+                </p>
+                <div id="earlyRefillLifeInfo" style="margin: 1rem 0; padding: 0.75rem; background: #fffbeb; border: 1px solid #fde68a; border-radius: 0.5rem; text-align: center; font-weight: 600; color: #92400e;">
+                </div>
+                <div style="margin: 1.5rem 0;">
+                    <label for="earlyRefillNote" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                        Reason for early refill:
+                    </label>
+                    <textarea
+                        id="earlyRefillNote"
+                        class="form-input"
+                        placeholder="e.g., Chipped edge, wrong grind, prototype run..."
+                        rows="3"
+                        style="width: 100%; font-size: 1rem;"
+                        maxlength="500"
+                    ></textarea>
+                </div>
+                <div style="margin: 1rem 0;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                        <input type="checkbox" id="earlyRefillExclude" checked style="width: auto; transform: scale(1.3);">
+                        <span>Exclude this lifecycle from the normal average</span>
+                    </label>
+                    <p style="margin: 0.25rem 0 0 1.75rem; font-size: 0.85rem; color: #6b7280;">
+                        Recommended if this was an abnormal lifecycle (prototype, damage, etc.)
+                    </p>
+                </div>
+                <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+                    <button id="earlyRefillConfirmBtn" class="btn btn-danger btn-large" style="flex: 1;">
+                        Confirm Refill
+                    </button>
+                    <button id="earlyRefillCancelBtn" class="btn btn-secondary btn-large" style="flex: 1;">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <style>
@@ -515,6 +557,61 @@
             });
         }
 
+        // Early refill modal elements
+        const earlyRefillModal = document.getElementById('earlyRefillModal');
+        const earlyRefillNote = document.getElementById('earlyRefillNote');
+        const earlyRefillExclude = document.getElementById('earlyRefillExclude');
+        const earlyRefillConfirmBtn = document.getElementById('earlyRefillConfirmBtn');
+        const earlyRefillCancelBtn = document.getElementById('earlyRefillCancelBtn');
+        const earlyRefillLifeInfo = document.getElementById('earlyRefillLifeInfo');
+
+        // Helper function to prompt for early refill confirmation
+        function promptForEarlyRefill(camInfo, percentUsed, materialRemaining) {
+            return new Promise((resolve, reject) => {
+                earlyRefillModal.classList.remove('hidden');
+                earlyRefillNote.value = '';
+                earlyRefillExclude.checked = true;
+
+                // Update modal with life info
+                const modalTitle = document.querySelector('#earlyRefillModal h3');
+                modalTitle.textContent = `Early Refill: ${camInfo}`;
+                earlyRefillLifeInfo.textContent =
+                    `${materialRemaining.toFixed(3)}" remaining (${percentUsed.toFixed(0)}% used)`;
+
+                earlyRefillNote.focus();
+
+                const confirmHandler = () => {
+                    const note = earlyRefillNote.value.trim();
+                    if (!note) {
+                        earlyRefillNote.style.borderColor = '#ef4444';
+                        earlyRefillNote.placeholder = 'A reason is required for early refill';
+                        setTimeout(() => {
+                            earlyRefillNote.style.borderColor = '';
+                            earlyRefillNote.placeholder = 'e.g., Chipped edge, wrong grind, prototype run...';
+                        }, 2000);
+                        return;
+                    }
+                    const excludeFromAvg = earlyRefillExclude.checked;
+                    cleanup();
+                    resolve({ note, excludeFromAvg });
+                };
+
+                const cancelHandler = () => {
+                    cleanup();
+                    reject(new Error('Early refill cancelled'));
+                };
+
+                const cleanup = () => {
+                    earlyRefillModal.classList.add('hidden');
+                    earlyRefillConfirmBtn.removeEventListener('click', confirmHandler);
+                    earlyRefillCancelBtn.removeEventListener('click', cancelHandler);
+                };
+
+                earlyRefillConfirmBtn.addEventListener('click', confirmHandler);
+                earlyRefillCancelBtn.addEventListener('click', cancelHandler);
+            });
+        }
+
         // Station button clicks
         document.querySelectorAll('.station-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
@@ -572,20 +669,45 @@
 
                             try {
                                 let material_removed = null;
+                                let camNotes = null;
+                                let cam_exclude_from_avg = null;
+
                                 // Prompt for material removed if moving from sharpen to cabinet
                                 if (cam.status_station === 'sharpen' && toStation === 'cabinet') {
                                     const camInfo = `S${currentJob.s_number} Set${cam.set_no} Cam${cam.cam_no}`;
                                     material_removed = await promptForMaterialRemoved(camInfo);
                                 }
 
+                                // Check for early refill (>10% life remaining)
+                                if (toStation === 'refill') {
+                                    try {
+                                        const ls = await getCamLifespan(cam.id);
+                                        if (ls && ls.current_lifespan && ls.current_lifespan.percent_life_used < 90) {
+                                            const camInfo = `S${currentJob.s_number} Set${cam.set_no} Cam${cam.cam_no}`;
+                                            const earlyResult = await promptForEarlyRefill(
+                                                camInfo,
+                                                ls.current_lifespan.percent_life_used,
+                                                ls.current_lifespan.material_remaining
+                                            );
+                                            camNotes = `Early refill: ${earlyResult.note}`;
+                                            cam_exclude_from_avg = earlyResult.excludeFromAvg;
+                                        }
+                                    } catch (e) {
+                                        if (e.message === 'Early refill cancelled') throw e;
+                                        console.error('Failed to check lifespan for early refill:', e);
+                                    }
+                                }
+
                                 await moveCam({
                                     cam_item_id: cam.id,
                                     to_station: toStation,
-                                    material_removed: material_removed
+                                    material_removed: material_removed,
+                                    notes: camNotes,
+                                    exclude_from_avg: cam_exclude_from_avg
                                 });
                                 movedCount++;
                             } catch (error) {
-                                if (error.message === 'Material input cancelled') {
+                                if (error.message === 'Early refill cancelled' || error.message === 'Material input cancelled') {
                                     // User cancelled - stop moving set
                                     throw error;
                                 }
@@ -608,16 +730,41 @@
                     } else {
                         // Move single cam
                         let material_removed = null;
+                        let moveNotes = null;
+                        let exclude_from_avg = null;
+
                         // Prompt for material removed if moving from sharpen to cabinet
                         if (currentCamItem.status_station === 'sharpen' && toStation === 'cabinet') {
                             const camInfo = `S${currentJob.s_number} Set${currentCamItem.set_no} Cam${currentCamItem.cam_no}`;
                             material_removed = await promptForMaterialRemoved(camInfo);
                         }
 
+                        // Check for early refill (>10% life remaining)
+                        if (toStation === 'refill') {
+                            try {
+                                const ls = await getCamLifespan(currentCamItem.id);
+                                if (ls && ls.current_lifespan && ls.current_lifespan.percent_life_used < 90) {
+                                    const camInfo = `S${currentJob.s_number} Set${currentCamItem.set_no} Cam${currentCamItem.cam_no}`;
+                                    const earlyResult = await promptForEarlyRefill(
+                                        camInfo,
+                                        ls.current_lifespan.percent_life_used,
+                                        ls.current_lifespan.material_remaining
+                                    );
+                                    moveNotes = `Early refill: ${earlyResult.note}`;
+                                    exclude_from_avg = earlyResult.excludeFromAvg;
+                                }
+                            } catch (e) {
+                                if (e.message === 'Early refill cancelled') throw e;
+                                console.error('Failed to check lifespan for early refill:', e);
+                            }
+                        }
+
                         const result = await moveCam({
                             cam_item_id: currentCamItem.id,
                             to_station: toStation,
-                            material_removed: material_removed
+                            material_removed: material_removed,
+                            notes: moveNotes,
+                            exclude_from_avg: exclude_from_avg
                         });
 
                         showSuccess(`Moved to ${formatStation(toStation)}`);

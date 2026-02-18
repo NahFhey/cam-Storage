@@ -310,6 +310,7 @@ class MoveRequest(BaseModel):
     notes: Optional[str] = Field(None, max_length=500)
     auto_bump: Optional[bool] = None
     material_removed: Optional[float] = Field(None, ge=0.0, le=1.0, description="Material removed in inches (0-1)")
+    exclude_from_avg: Optional[bool] = Field(None, description="Exclude this lifecycle from rolling average")
 
     @field_validator('to_station')
     @classmethod
@@ -324,6 +325,7 @@ class BatchMoveItem(BaseModel):
     to_station: str = Field(..., description="Destination station")
     notes: Optional[str] = Field(None, max_length=500)
     material_removed: Optional[float] = Field(None, ge=0.0, le=1.0)
+    exclude_from_avg: Optional[bool] = Field(None, description="Exclude this lifecycle from rolling average")
 
     @field_validator('to_station')
     @classmethod
@@ -1188,7 +1190,8 @@ async def move_cam(
             operator=operator,
             notes=move.notes,
             auto_bump=move.auto_bump,
-            material_removed=move.material_removed
+            material_removed=move.material_removed,
+            exclude_from_avg=move.exclude_from_avg or False
         )
         _cache.invalidate()  # Data changed — clear cached analytics
         return result
@@ -1256,7 +1259,8 @@ async def batch_move(
                 operator=operator,
                 notes=item.notes,
                 auto_bump=batch.auto_bump,
-                material_removed=item.material_removed
+                material_removed=item.material_removed,
+                exclude_from_avg=item.exclude_from_avg or False
             )
             results.append(result)
         except (ValueError, Exception) as e:

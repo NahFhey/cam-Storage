@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS tool_lifespans (
     total_material_removed REAL NOT NULL DEFAULT 0.0,
     sharpen_count INTEGER NOT NULL DEFAULT 0,
     max_material_life REAL NOT NULL DEFAULT 0.375,
+    exclude_from_avg BOOLEAN NOT NULL DEFAULT 0,
     FOREIGN KEY (cam_item_id) REFERENCES cam_items(id) ON DELETE CASCADE,
     UNIQUE(cam_item_id, lifespan_number)
 );
@@ -510,8 +511,8 @@ def migrate_database(db_path: str = None):
                     cursor.execute("""
                         INSERT INTO tool_lifespans
                         (cam_item_id, lifespan_number, started_at, ended_at,
-                         total_material_removed, sharpen_count, max_material_life)
-                        VALUES (?, ?, ?, ?, ?, ?, 0.375)
+                         total_material_removed, sharpen_count, max_material_life, exclude_from_avg)
+                        VALUES (?, ?, ?, ?, ?, ?, 0.375, 1)
                     """, (cam_id, lifespan_number, current_start, moved_at,
                           current_total, current_count))
                     backfill_count += 1
@@ -526,8 +527,8 @@ def migrate_database(db_path: str = None):
                 cursor.execute("""
                     INSERT INTO tool_lifespans
                     (cam_item_id, lifespan_number, started_at, ended_at,
-                     total_material_removed, sharpen_count, max_material_life)
-                    VALUES (?, ?, ?, NULL, ?, ?, 0.375)
+                     total_material_removed, sharpen_count, max_material_life, exclude_from_avg)
+                    VALUES (?, ?, ?, NULL, ?, ?, 0.375, 1)
                 """, (cam_id, lifespan_number, current_start,
                       current_total, current_count))
                 backfill_count += 1
@@ -557,6 +558,18 @@ def migrate_database(db_path: str = None):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_priority_changes_time ON priority_changes(changed_at DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_priority_changes_user ON priority_changes(changed_by_user_id)")
         logger.info("    Created priority_changes table")
+
+    # Check if exclude_from_avg column exists on tool_lifespans
+    cursor.execute("PRAGMA table_info(tool_lifespans)")
+    columns = [col[1] for col in cursor.fetchall()]
+
+    if 'exclude_from_avg' not in columns:
+        logger.info("  Adding exclude_from_avg column to tool_lifespans...")
+        cursor.execute("ALTER TABLE tool_lifespans ADD COLUMN exclude_from_avg BOOLEAN NOT NULL DEFAULT 0")
+        # Mark all currently-open lifespans as excluded (mid-life at deployment time)
+        cursor.execute("UPDATE tool_lifespans SET exclude_from_avg = 1 WHERE ended_at IS NULL")
+        affected = cursor.rowcount
+        logger.info(f"    Added exclude_from_avg column; marked {affected} open lifespan(s) as excluded")
 
     conn.commit()
 
