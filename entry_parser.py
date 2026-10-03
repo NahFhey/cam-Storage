@@ -8,8 +8,10 @@ Supports multiple formats:
 - etc.
 """
 import re
-from typing import Optional, Dict, List, Tuple
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from typing import Dict, Optional
+
+from business_logic import CAM_ITEM_COLUMNS
 
 @dataclass
 class ParsedEntry:
@@ -104,6 +106,15 @@ def parse_manual_entry(entry: str) -> ParsedEntry:
     # Unable to parse
     raise ValueError(f"Unable to parse entry: {entry}")
 
+async def _find_cams(db, job_id: int, extra_where: str = "", params: tuple = (),
+                     order: str = "set_no, cam_no") -> list:
+    cursor = await db.execute(
+        f"SELECT {CAM_ITEM_COLUMNS} FROM cam_items WHERE job_id = ? {extra_where} ORDER BY {order}",
+        (job_id,) + params
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
 async def resolve_entry(db, entry: str) -> Dict:
     """
     Resolve a manual entry to a specific CAM item or list of candidates.
@@ -111,149 +122,57 @@ async def resolve_entry(db, entry: str) -> Dict:
     Returns:
     {
         "status": "exact" | "multiple" | "not_found" | "job_not_found",
-        "cam_item": {...} or None,
-        "candidates": [...] or None,
-        "job": {...} or None,
-        "parsed": ParsedEntry
+        "cam_item": {...} (exact),
+        "candidates": [...] (multiple),
+        "job": {...},
+        "parsed": {s_number, set_no, cam_no, confidence},
+        "message": str (multiple / not_found)
     }
     """
     parsed = parse_manual_entry(entry)
-    parsed_dict = {
-        "s_number": parsed.s_number,
-        "set_no": parsed.set_no,
-        "cam_no": parsed.cam_no,
-        "confidence": parsed.confidence
-    }
+    parsed_dict = asdict(parsed)
 
-    # Look up job by S-number (match with or without S prefix)
     cursor = await db.execute(
-        "SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE s_number = ? OR s_number = ? OR s_number = ?",
-        (parsed.s_number, f"S{parsed.s_number}", parsed.s_number.lstrip("S"))
+        "SELECT id, s_number, title, priority_level, created_at, notes FROM jobs WHERE s_number = ? OR s_number = ?",
+        (parsed.s_number, f"S{parsed.s_number}")
     )
     job = await cursor.fetchone()
-
     if not job:
-        return {
-            "status": "job_not_found",
-            "parsed": parsed_dict,
-            "s_number": parsed.s_number
-        }
+        return {"status": "job_not_found", "parsed": parsed_dict, "s_number": parsed.s_number}
 
     job_dict = dict(job)
+    base = {"job": job_dict, "parsed": parsed_dict}
 
-    # If we have set and cam, try exact match
+    def exact(cam):
+        return {"status": "exact", "cam_item": cam, **base}
+
+    def multiple(cams, message):
+        return {"status": "multiple", "candidates": cams, "message": message, **base}
+
+    def not_found(message):
+        return {"status": "not_found", "message": message, **base}
+
     if parsed.set_no is not None and parsed.cam_no is not None:
-        cursor = await db.execute(
-            """
-            SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
-                   status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
-            FROM cam_items
-            WHERE job_id = ? AND set_no = ? AND cam_no = ?
-            """,
-            (job['id'], parsed.set_no, parsed.cam_no)
-        )
-        cam_item = await cursor.fetchone()
+        cams = await _find_cams(db, job['id'], "AND set_no = ? AND cam_no = ?", (parsed.set_no, parsed.cam_no))
+        if cams:
+            return exact(cams[0])
+        return not_found(f"CAM item not found: S{parsed.s_number} Set{parsed.set_no} Cam{parsed.cam_no}")
 
-        if cam_item:
-            return {
-                "status": "exact",
-                "cam_item": dict(cam_item),
-                "job": job_dict,
-                "parsed": parsed_dict
-            }
-        else:
-            return {
-                "status": "not_found",
-                "job": job_dict,
-                "parsed": parsed_dict,
-                "message": f"CAM item not found: S{parsed.s_number} Set{parsed.set_no} Cam{parsed.cam_no}"
-            }
-
-    # If we have only set, return all cams in that set
     if parsed.set_no is not None:
-        cursor = await db.execute(
-            """
-            SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
-                   status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
-            FROM cam_items
-            WHERE job_id = ? AND set_no = ?
-            ORDER BY cam_no
-            """,
-            (job['id'], parsed.set_no)
-        )
-        candidates = await cursor.fetchall()
+        cams = await _find_cams(db, job['id'], "AND set_no = ?", (parsed.set_no,), order="cam_no")
+        if cams:
+            return multiple(cams, f"Multiple CAMs found in Set {parsed.set_no}")
+        return not_found(f"No CAMs found in Set {parsed.set_no}")
 
-        if candidates:
-            return {
-                "status": "multiple",
-                "candidates": [dict(c) for c in candidates],
-                "job": job_dict,
-                "parsed": parsed_dict,
-                "message": f"Multiple CAMs found in Set {parsed.set_no}"
-            }
-        else:
-            return {
-                "status": "not_found",
-                "job": job_dict,
-                "parsed": parsed_dict,
-                "message": f"No CAMs found in Set {parsed.set_no}"
-            }
-
-    # If we have only cam number (rare), search across all sets
     if parsed.cam_no is not None:
-        cursor = await db.execute(
-            """
-            SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
-                   status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
-            FROM cam_items
-            WHERE job_id = ? AND cam_no = ?
-            ORDER BY set_no
-            """,
-            (job['id'], parsed.cam_no)
-        )
-        candidates = await cursor.fetchall()
+        cams = await _find_cams(db, job['id'], "AND cam_no = ?", (parsed.cam_no,), order="set_no")
+        if len(cams) == 1:
+            return exact(cams[0])
+        if cams:
+            return multiple(cams, f"Multiple sets have Cam {parsed.cam_no}")
+        # No such cam number: fall back to listing every tool in the job
 
-        if len(candidates) == 1:
-            return {
-                "status": "exact",
-                "cam_item": dict(candidates[0]),
-                "job": job_dict,
-                "parsed": parsed_dict
-            }
-        elif len(candidates) > 1:
-            return {
-                "status": "multiple",
-                "candidates": [dict(c) for c in candidates],
-                "job": job_dict,
-                "parsed": parsed_dict,
-                "message": f"Multiple sets have Cam {parsed.cam_no}"
-            }
-
-    # Just S-number, return all cam items for this job
-    cursor = await db.execute(
-        """
-        SELECT id, job_id, set_no, cam_no, die_position, enter_die_steel, exit_die_steel,
-               status_station, status_updated_at, notes, eol_cycles_expected, max_material_life, created_at
-        FROM cam_items
-        WHERE job_id = ?
-        ORDER BY set_no, cam_no
-        """,
-        (job['id'],)
-    )
-    candidates = await cursor.fetchall()
-
-    if candidates:
-        return {
-            "status": "multiple",
-            "candidates": [dict(c) for c in candidates],
-            "job": job_dict,
-            "parsed": parsed_dict,
-            "message": f"Multiple CAMs found for S{parsed.s_number}"
-        }
-    else:
-        return {
-            "status": "not_found",
-            "job": job_dict,
-            "parsed": parsed_dict,
-            "message": f"No CAMs found for S{parsed.s_number}"
-        }
+    cams = await _find_cams(db, job['id'])
+    if cams:
+        return multiple(cams, f"Multiple CAMs found for S{parsed.s_number}")
+    return not_found(f"No CAMs found for S{parsed.s_number}")

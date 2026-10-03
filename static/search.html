@@ -3,212 +3,110 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CAM Tracking - Search</title>
+    <title>Search · CAM Tracking</title>
     <link rel="stylesheet" href="/static/css/styles.css">
-</head>
-<body>
-    <nav>
-        <h1>CAM Tracking Kiosk</h1>
-        <div class="nav-links">
-            <a href="/static/index.html">Entry</a>
-            <a href="/static/hot-list.html">Hot List</a>
-            <a href="/static/search.html" class="active">Search</a>
-            <a href="/static/analytics.html">Analytics</a>
-            <a href="/static/admin.html">Admin</a>
-        </div>
-    </nav>
-
-    <div class="container">
-        <div class="card">
-            <h2 class="card-header">Search Jobs & Tools</h2>
-
-            <div class="form-group">
-                <input
-                    type="text"
-                    id="searchInput"
-                    class="form-input form-input-large"
-                    placeholder="S1793, job title, set, cam..."
-                    autocomplete="off"
-                    autofocus
-                >
-            </div>
-
-            <button id="searchBtn" class="btn btn-primary btn-large btn-block">
-                Search
-            </button>
-        </div>
-
-        <div id="loading" class="spinner hidden"></div>
-
-        <!-- Jobs Results -->
-        <div id="jobsCard" class="card hidden">
-            <h3 class="card-header">Jobs Found</h3>
-            <div id="jobsContent"></div>
-        </div>
-
-        <!-- CAM Items Results -->
-        <div id="camItemsCard" class="card hidden">
-            <h3 class="card-header">Tools Found</h3>
-            <div id="camItemsContent"></div>
-        </div>
-    </div>
-
+    <script src="/static/js/ui.js"></script>
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/layout.js"></script>
+</head>
+<body data-page="search">
+    <main class="page page-narrow">
+        <div class="page-header">
+            <div>
+                <h1>Search</h1>
+                <p>Find jobs by S-number or title, or tools by any entry format.</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <form id="searchForm" autocomplete="off">
+                <div class="input-hero-wrap">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                    <input type="search" id="searchInput" class="input input-hero" style="font-family:var(--font)"
+                           placeholder="S1793, panel, 1793-2…" spellcheck="false" autofocus aria-label="Search">
+                </div>
+            </form>
+        </div>
+
+        <div id="results" class="stack-v" style="margin-top:1rem"></div>
+    </main>
+
     <script src="/static/js/auth.js"></script>
     <script>
-        const searchInput = document.getElementById('searchInput');
-        const searchBtn = document.getElementById('searchBtn');
-        const loading = document.getElementById('loading');
-        const jobsCard = document.getElementById('jobsCard');
-        const jobsContent = document.getElementById('jobsContent');
-        const camItemsCard = document.getElementById('camItemsCard');
-        const camItemsContent = document.getElementById('camItemsContent');
+    (function () {
+        'use strict';
+        var U = UI;
+        var input = document.getElementById('searchInput');
+        var results = document.getElementById('results');
+        var seq = 0;
 
-        searchBtn.addEventListener('click', handleSearch);
-        searchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                handleSearch();
+        function intro() {
+            results.innerHTML = '<div class="card">' + U.emptyState('search', 'Start typing to search',
+                'Try an S-number (1793), a title word, or a tool like 1793-1-2.') + '</div>';
+        }
+
+        async function run() {
+            var q = input.value.trim();
+            var url = q ? '?q=' + encodeURIComponent(q) : location.pathname;
+            history.replaceState(null, '', url);
+            if (!q) { intro(); return; }
+            var mine = ++seq;
+            results.innerHTML = '<div class="card"><div class="skeleton" style="height:2.5rem;margin-bottom:0.75rem"></div><div class="skeleton" style="height:2.5rem"></div></div>';
+            try {
+                var data = await API.search(q);
+                if (mine !== seq) return;
+                render(data);
+            } catch (err) {
+                if (mine === seq) results.innerHTML = U.inlineAlert(err.message, 'error');
             }
-        });
+        }
 
-        async function handleSearch() {
-            const query = searchInput.value.trim();
-            if (!query) {
-                showError('Please enter a search term');
+        function render(data) {
+            if (!data.jobs.length && !data.cam_items.length) {
+                results.innerHTML = '<div class="card">' + U.emptyState('search', 'No matches for “' + data.query + '”',
+                    'Check the number, or search by part of the job title.') + '</div>';
                 return;
             }
-
-            loading.classList.remove('hidden');
-            searchBtn.disabled = true;
-            jobsCard.classList.add('hidden');
-            camItemsCard.classList.add('hidden');
-
-            try {
-                const results = await search(query);
-
-                // Display jobs
-                if (results.jobs && results.jobs.length > 0) {
-                    displayJobs(results.jobs);
-                    jobsCard.classList.remove('hidden');
-                }
-
-                // Display cam items
-                if (results.cam_items && results.cam_items.length > 0) {
-                    displayCamItems(results.cam_items);
-                    camItemsCard.classList.remove('hidden');
-                }
-
-                if (results.jobs.length === 0 && results.cam_items.length === 0) {
-                    showError('No results found');
-                }
-            } catch (error) {
-                showError(error.message);
-            } finally {
-                loading.classList.add('hidden');
-                searchBtn.disabled = false;
+            var html = '';
+            if (data.jobs.length) {
+                html += '<div class="card"><div class="card-header"><div class="card-title">' + U.icon('briefcase') +
+                    'Jobs <span class="badge">' + data.jobs.length + '</span></div></div>' +
+                    '<div class="table-wrap"><table class="table"><thead><tr><th>Job</th><th>Priority</th><th>Created</th><th></th></tr></thead><tbody>' +
+                    data.jobs.map(function (j) {
+                        return '<tr class="is-clickable" data-href="/static/job-detail.html?id=' + j.id + '"><td>' + U.toolId(j.s_number) +
+                            (j.title ? '<div class="muted" style="font-size:0.88rem">' + U.esc(j.title) + '</div>' : '') + '</td>' +
+                            '<td>' + U.priorityBadge(j.priority_level) + '</td><td class="nowrap">' + U.formatDate(j.created_at) + '</td>' +
+                            '<td class="text-right muted">' + U.icon('chevronRight') + '</td></tr>';
+                    }).join('') + '</tbody></table></div></div>';
             }
-        }
-
-        function displayJobs(jobs) {
-            const html = `
-                <div class="table-responsive">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>S-Number</th>
-                                <th>Title</th>
-                                <th>Priority</th>
-                                <th>Created</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${jobs.map(job => `
-                                <tr>
-                                    <td><strong>S${job.s_number}</strong></td>
-                                    <td>${job.title || '-'}</td>
-                                    <td>${job.priority_level || 'low'}</td>
-                                    <td>${formatDate(job.created_at)}</td>
-                                    <td>
-                                        <a href="/static/job-detail.html?id=${job.id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
-                                            View
-                                        </a>
-                                    </td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `;
-            jobsContent.innerHTML = html;
-        }
-
-        async function displayCamItems(camItems) {
-            // Get job info for each cam item
-            const jobsMap = {};
-
-            for (const cam of camItems) {
-                if (!jobsMap[cam.job_id]) {
-                    try {
-                        const jobData = await getJob(cam.job_id);
-                        jobsMap[cam.job_id] = jobData.job;
-                    } catch (error) {
-                        console.error('Failed to load job:', error);
-                    }
-                }
+            if (data.cam_items.length) {
+                html += '<div class="card"><div class="card-header"><div class="card-title">' + U.icon('tool') +
+                    'Tools <span class="badge">' + data.cam_items.length + '</span></div></div>' +
+                    '<div class="table-wrap"><table class="table"><thead><tr><th>Tool</th><th>Station</th><th>Last move</th><th class="text-right">Actions</th></tr></thead><tbody>' +
+                    data.cam_items.map(function (c) {
+                        var entry = c.s_number + '-' + c.set_no + '-' + c.cam_no;
+                        return '<tr><td>' + U.toolId(c.s_number, c.set_no, c.cam_no) + '</td><td>' + U.stationBadge(c.status_station) + '</td>' +
+                            '<td class="nowrap" title="' + U.esc(U.formatDateTime(c.status_updated_at)) + '">' + U.timeAgo(c.status_updated_at) + '</td>' +
+                            '<td class="text-right nowrap"><a class="btn btn-sm btn-primary" href="/static/index.html?q=' + encodeURIComponent(entry) + '">Move</a> ' +
+                            '<a class="btn btn-sm" href="/static/job-detail.html?id=' + c.job_id + '">Job</a></td></tr>';
+                    }).join('') + '</tbody></table></div></div>';
             }
-
-            const html = `
-                <div class="table-responsive">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Tool</th>
-                                <th>Station</th>
-                                <th>Last Update</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${camItems.map(cam => {
-                                const job = jobsMap[cam.job_id];
-                                return `
-                                    <tr>
-                                        <td><strong>S${job ? job.s_number : cam.job_id} Set${cam.set_no} Cam${cam.cam_no}</strong></td>
-                                        <td>
-                                            <span class="badge ${getStationBadgeClass(cam.status_station)}">
-                                                ${formatStation(cam.status_station)}
-                                            </span>
-                                        </td>
-                                        <td>${formatDateTime(cam.status_updated_at)}</td>
-                                        <td>
-                                            <a href="/static/job-detail.html?id=${cam.job_id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
-                                                View Job
-                                            </a>
-                                        </td>
-                                    </tr>
-                                `;
-                            }).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `;
-            camItemsContent.innerHTML = html;
+            results.innerHTML = html;
+            results.querySelectorAll('tr[data-href]').forEach(function (tr) {
+                tr.addEventListener('click', function () { location.href = tr.dataset.href; });
+            });
         }
 
-        function showError(message) {
-            const alertDiv = document.createElement('div');
-            alertDiv.className = 'alert alert-error';
-            alertDiv.textContent = message;
+        input.addEventListener('input', U.debounce(run, 250));
+        document.getElementById('searchForm').addEventListener('submit', function (e) { e.preventDefault(); run(); });
 
-            // Clear previous errors
-            document.querySelectorAll('.alert').forEach(el => el.remove());
-
-            const container = document.querySelector('.container');
-            container.insertBefore(alertDiv, container.children[1]);
-
-            setTimeout(() => alertDiv.remove(), 5000);
-        }
+        Auth.onReady(function () {
+            var q = new URLSearchParams(location.search).get('q');
+            if (q) input.value = q;
+            run();
+            input.focus();
+        });
+    })();
     </script>
 </body>
 </html>

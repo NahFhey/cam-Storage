@@ -89,9 +89,19 @@ pytest tests/ --cov=. --cov-report=html
 - **TestConfigAPI**: Configuration management tests
 - **TestValidation**: Input validation tests
 
+### test_medium_priority.py
+- Pagination, input validation, health check, rate limiting and error messages
+
+### test_workflows.py
+- **TestSetMoves**: atomic whole-set moves, bumping of conflicting active sets, material-removed requirements
+- **TestMoveErrors**: unknown tools return 404; a 0.000" sharpening still counts and undoes cleanly
+- **TestAggregatedStats**: `/api/jobs/{id}/tool-stats`, `/api/analytics/material-stats`, S-numbers on moves and search results
+- **TestExports**: CSV contents (including the tool lifetime summary) and export permissions
+- **TestMigration**: upgrading a first-release database schema (idempotent)
+
 ## Test Status
 
-**82 tests passing** across all test files (Entry Parser + Database/Business Logic + API)
+**100 tests passing** across all test files
 
 ## Test Fixtures
 

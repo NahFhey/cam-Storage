@@ -3,1371 +3,858 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CAM Tracking - Admin</title>
+    <title>Admin · CAM Tracking</title>
     <link rel="stylesheet" href="/static/css/styles.css">
-    <style>
-        .top5-row.drag-over { border-top: 3px solid var(--primary-color, #3b82f6); }
-        .top5-row[draggable="true"] { transition: opacity 0.2s; }
-        .drag-handle:active { cursor: grabbing; }
-        .sortable-header:hover { background: rgba(0,0,0,0.05); }
-        .sortable-header.active-sort { color: var(--primary-color, #3b82f6); }
-        .sort-indicator { font-size: 0.7rem; margin-left: 0.25rem; }
-    </style>
+    <script src="/static/js/ui.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/layout.js"></script>
 </head>
-<body>
-    <nav>
-        <h1>CAM Tracking Kiosk</h1>
-        <div class="nav-links">
-            <a href="/static/index.html">Entry</a>
-            <a href="/static/hot-list.html">Hot List</a>
-            <a href="/static/search.html">Search</a>
-            <a href="/static/analytics.html">Analytics</a>
-            <a href="/static/admin.html" class="active">Admin</a>
-        </div>
-    </nav>
-
-    <div class="container">
-        <!-- Tab Bar -->
-        <div class="admin-tabs">
-            <button class="admin-tab active" data-tab="general">General</button>
-            <button class="admin-tab" data-tab="top5">Top 5</button>
-        </div>
-
-        <!-- General Tab -->
-        <div class="admin-tab-content active" id="tab-general">
-
-        <!-- Configuration -->
-        <div class="card">
-            <h2 class="card-header">Configuration</h2>
-            <div id="configAlerts"></div>
-
-            <div class="form-group">
-                <label class="form-label">
-                    <input type="checkbox" id="autoBumpCheckbox" style="width: auto; margin-right: 0.5rem;">
-                    Enable Auto-Bump (when moving to Active, auto-bump existing Active cam to Sharpen)
-                </label>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label" for="defaultMaterialLife">Default Material Life (inches)</label>
-                <input type="number" id="defaultMaterialLife" class="form-input"
-                    step="0.001" min="0.001" max="2.000" value="0.375"
-                    style="max-width: 200px;">
-                <p style="margin-top: 0.25rem; color: #666; font-size: 0.85rem;">
-                    Total material removable per tool lifespan before refill. Default: 0.375". Applied to new tools.
-                </p>
-            </div>
-
-            <button id="saveConfigBtn" class="btn btn-success">Save Configuration</button>
-        </div>
-
-        <!-- User Management -->
-        <div class="card">
-            <h2 class="card-header">User Management</h2>
-            <div id="userAlerts"></div>
-
-            <div id="usersListContent">
-                <p class="text-center">Loading users...</p>
-            </div>
-
-            <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #ddd;">
-
-            <h3 style="margin-bottom: 1rem;">Add New User</h3>
-            <form id="createUserForm">
-                <div class="grid grid-2">
-                    <div class="form-group">
-                        <label class="form-label" for="newUsername">Username</label>
-                        <input type="text" id="newUsername" class="form-input" placeholder="e.g., jsmith" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="newDisplayName">Display Name</label>
-                        <input type="text" id="newDisplayName" class="form-input" placeholder="e.g., John Smith" required>
-                    </div>
-                </div>
-                <div class="grid grid-2">
-                    <div class="form-group">
-                        <label class="form-label" for="newPin">PIN (min 4 characters)</label>
-                        <input type="password" id="newPin" class="form-input" placeholder="Enter PIN" minlength="4" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="newRole">Role</label>
-                        <select id="newRole" class="form-select">
-                            <option value="user" selected>User</option>
-                            <option value="admin">Admin</option>
-                        </select>
-                    </div>
-                </div>
-                <button type="submit" class="btn btn-success">Add User</button>
-            </form>
-        </div>
-
-        <!-- Create Job -->
-        <div class="card">
-            <h2 class="card-header">Create New Job</h2>
-            <div id="jobAlerts"></div>
-
-            <form id="createJobForm">
-                <div class="grid grid-2">
-                    <div class="form-group">
-                        <label class="form-label" for="sNumber">S-Number (without S prefix)</label>
-                        <input type="text" id="sNumber" class="form-input" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="jobTitle">Title (optional)</label>
-                        <input type="text" id="jobTitle" class="form-input">
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label" for="jobNotes">Notes (optional)</label>
-                    <textarea id="jobNotes" class="form-textarea" rows="3"></textarea>
-                </div>
-
-                <button type="submit" class="btn btn-primary btn-large">Create Job</button>
-            </form>
-        </div>
-
-        <!-- Bulk Create CAM Items -->
-        <div class="card">
-            <h2 class="card-header">Bulk Create CAM Items</h2>
-            <div id="bulkAlerts"></div>
-
-            <form id="bulkCreateForm">
-                <div class="form-group">
-                    <label class="form-label" for="bulkJobId">Job (S-Number)</label>
-                    <select id="bulkJobId" class="form-select" required>
-                        <option value="">Select a job...</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label" for="numSets">Number of Sets</label>
-                    <input type="number" id="numSets" class="form-input" value="1" min="1" max="100" required>
-                    <p style="margin-top: 0.25rem; color: #666; font-size: 0.85rem;">Creates sets numbered 1 through the value entered.</p>
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label">CAM Configurations</label>
-                    <p style="margin-bottom: 0.5rem; color: #666; font-size: 0.85rem;">Define each CAM that will be created in every set.</p>
-                    <div id="camConfigRows"></div>
-                    <button type="button" id="addCamBtn" class="btn btn-primary" style="margin-top: 0.5rem;">+ Add CAM</button>
-                </div>
-
-                <button type="submit" class="btn btn-success btn-large">Create CAM Items</button>
-            </form>
-        </div>
-
-        <!-- Edit CAM Items -->
-        <div class="card">
-            <h2 class="card-header">Edit CAM Items</h2>
-            <div id="camEditAlerts"></div>
-
-            <div class="form-group">
-                <label class="form-label" for="editJobSelect">Select Job</label>
-                <select id="editJobSelect" class="form-select">
-                    <option value="">Select a job to view its CAM items...</option>
-                </select>
-            </div>
-
-            <div id="camItemsList" class="hidden">
-                <h3 style="margin: 1.5rem 0 1rem;">CAM Items</h3>
-                <div id="camItemsContent"></div>
-            </div>
-        </div>
-
-        <!-- Export/Import Data -->
-        <div class="card">
-            <h2 class="card-header">Export/Import Data</h2>
-
-            <div class="grid grid-2">
-                <button onclick="exportJobsCSV()" class="btn btn-primary btn-large">
-                    Export Jobs (CSV)
-                </button>
-                <button onclick="exportCamItemsCSV()" class="btn btn-primary btn-large">
-                    Export CAM Items (CSV)
-                </button>
-                <button onclick="exportMovesCSV()" class="btn btn-primary btn-large">
-                    Export Moves (CSV)
-                </button>
-                <button onclick="exportToolLifespansCSV()" class="btn btn-primary btn-large">
-                    Export Tool Lifespans (CSV)
-                </button>
-                <button onclick="exportToolSummaryCSV()" class="btn btn-primary btn-large">
-                    Export Tool Summary (CSV)
-                </button>
-                <button onclick="exportPriorityChangesCSV()" class="btn btn-primary btn-large">
-                    Export Priority Changes (CSV)
-                </button>
-                <button onclick="exportDatabase()" class="btn btn-warning btn-large">
-                    Download Database (SQLite)
-                </button>
-            </div>
-
-            <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #ddd;">
-
+<body data-page="admin" data-requires="admin">
+    <main class="page">
+        <div class="page-header">
             <div>
-                <h3 style="margin-bottom: 1rem;">Import Database</h3>
-                <div id="importAlerts"></div>
-                <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
-                    <input type="file" id="dbFileInput" accept=".db,.sqlite,.sqlite3" style="flex: 1; min-width: 200px;">
-                    <button onclick="importDatabase()" class="btn btn-danger btn-large" style="min-width: 200px;">
-                        Import Database (REPLACES ALL DATA!)
-                    </button>
-                </div>
-                <p style="margin-top: 0.5rem; color: #666; font-size: 0.9rem;">
-                    ⚠️ Warning: This will replace ALL current data with the imported database. Make a backup first!
-                </p>
+                <h1>Admin</h1>
+                <p>Manage jobs, tools, priorities, users and data.</p>
             </div>
         </div>
 
-        <!-- All Jobs List -->
-        <div class="card">
-            <h2 class="card-header">All Jobs</h2>
-            <div style="margin-bottom: 1rem;">
-                <input
-                    type="text"
-                    id="jobSearchInput"
-                    class="form-input"
-                    placeholder="Search by S-Number or title..."
-                    style="font-size: 1rem; padding: 0.75rem;"
-                >
-                <p style="margin-top: 0.5rem; color: #666; font-size: 0.9rem;">
-                    Enter at least 2 characters to search. Leave blank to show all jobs.
-                </p>
-            </div>
-            <div id="jobsListContent"></div>
+        <div class="tabs" role="tablist">
+            <button class="tab" role="tab" data-tab="jobs">Jobs</button>
+            <button class="tab" role="tab" data-tab="tools">Tools</button>
+            <button class="tab" role="tab" data-tab="top5">Top 5</button>
+            <button class="tab" role="tab" data-tab="users">Users</button>
+            <button class="tab" role="tab" data-tab="settings">Settings &amp; data</button>
         </div>
 
-        </div><!-- /tab-general -->
-
-        <!-- Top 5 Tab -->
-        <div class="admin-tab-content" id="tab-top5">
-
-            <!-- Top 5 Priority Manager -->
+        <!-- ========== Jobs ========== -->
+        <section class="tab-panel" id="tab-jobs" role="tabpanel">
             <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2 class="card-header" style="margin-bottom: 0;">Top 5 Priority Jobs</h2>
-                    <button id="refreshTop5Btn" class="btn btn-primary" style="padding: 0.5rem 1rem; min-height: auto;">Refresh</button>
+                <div class="card-header">
+                    <div class="card-title">All jobs <span class="badge" id="jobCount"></span></div>
+                    <div class="toolbar">
+                        <div class="search-input-wrap">
+                            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                            <input type="search" id="jobFilter" class="input" placeholder="Filter by S-number or title" aria-label="Filter jobs">
+                        </div>
+                        <button type="button" class="btn btn-primary" id="newJobBtn"></button>
+                    </div>
                 </div>
-                <p style="color: var(--text-light); margin: 1rem 0;">
-                    The top 5 jobs from the Hot List, ranked by urgency. Override priorities or swap jobs in/out.
-                </p>
-                <div id="top5Alerts"></div>
-                <div id="top5Loading" class="spinner hidden"></div>
-                <div id="top5Content"></div>
+                <div id="jobsTable"><div class="spinner"></div></div>
             </div>
+        </section>
 
-            <!-- Swap Job Panel -->
-            <div class="card" id="swapJobCard" style="display: none;">
-                <h2 class="card-header">Replace a Job in Top 5</h2>
-                <p style="color: var(--text-light); margin-bottom: 1rem;">Select a job to swap in:</p>
-                <input type="text" id="swapSearchInput" class="form-input" placeholder="Search by S-Number or title..." style="margin-bottom: 1rem;">
-                <div id="swapCandidates"></div>
-                <button id="cancelSwapBtn" class="btn btn-danger" style="margin-top: 1rem; padding: 0.5rem 1rem; min-height: auto;">Cancel</button>
-            </div>
-
-            <!-- Priority Change Audit Log -->
+        <!-- ========== Tools ========== -->
+        <section class="tab-panel" id="tab-tools" role="tabpanel">
             <div class="card">
-                <h2 class="card-header">Priority Change History</h2>
-                <div id="auditAlerts"></div>
-                <div id="auditContent">
-                    <p class="text-center">Loading audit log...</p>
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">Add sets &amp; cams</div>
+                        <div class="card-subtitle">Every set gets the same cam layout. Existing tools are never overwritten.</div>
+                    </div>
+                </div>
+                <form id="bulkForm" novalidate>
+                    <div class="grid grid-2">
+                        <div class="field">
+                            <label class="field-label" for="bulkJob">Job</label>
+                            <select id="bulkJob" class="select job-select" required></select>
+                        </div>
+                        <div class="field">
+                            <label class="field-label" for="numSets">Number of sets</label>
+                            <input type="number" id="numSets" class="input" value="1" min="1" max="100" inputmode="numeric" required>
+                            <span class="field-hint">Creates sets 1 through this number.</span>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <span class="field-label">Cams in each set</span>
+                        <div id="camRows"></div>
+                        <div><button type="button" class="btn btn-sm" id="addCamBtn"></button></div>
+                    </div>
+                    <div class="row-between">
+                        <div class="preview-note" id="bulkPreview"></div>
+                        <button type="submit" class="btn btn-primary btn-lg">Create tools</button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">Edit tools</div>
+                        <div class="card-subtitle">Changes save automatically.</div>
+                    </div>
+                    <select id="editJob" class="select job-select" style="width:min(340px,100%)" aria-label="Job to edit"></select>
+                </div>
+                <div id="editTools">
                 </div>
             </div>
+        </section>
 
-            <!-- Escalation Analytics -->
+        <!-- ========== Top 5 ========== -->
+        <section class="tab-panel" id="tab-top5" role="tabpanel">
             <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2 class="card-header" style="margin-bottom: 0;">Escalation Analytics</h2>
-                    <select id="analyticsPeriod" class="form-select" style="width: auto; padding: 0.5rem;">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">Top 5 priority jobs</div>
+                        <div class="card-subtitle">Order sets priority: #1 Top, #2 Urgent, #3 High, #4 Medium, #5 Low. Drag rows or use the arrows.</div>
+                    </div>
+                    <button type="button" class="btn" id="refreshTop5Btn"></button>
+                </div>
+                <div id="top5Table"><div class="spinner"></div></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Priority change history</div>
+                </div>
+                <div id="auditLog"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Escalation analytics</div>
+                    <select id="escalationPeriod" class="select select-sm" style="width:auto" aria-label="Period">
                         <option value="7">Last 7 days</option>
                         <option value="30" selected>Last 30 days</option>
                         <option value="90">Last 90 days</option>
                     </select>
                 </div>
-                <div id="analyticsContent">
-                    <p class="text-center">Switch to this tab to load analytics.</p>
+                <div id="escalation"></div>
+            </div>
+        </section>
+
+        <!-- ========== Users ========== -->
+        <section class="tab-panel" id="tab-users" role="tabpanel">
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">Users</div>
+                        <div class="card-subtitle">Everyone signs in with a unique PIN. Deactivated users are signed out immediately.</div>
+                    </div>
+                    <button type="button" class="btn btn-primary" id="newUserBtn"></button>
                 </div>
+                <div id="usersTable"><div class="spinner"></div></div>
+            </div>
+        </section>
+
+        <!-- ========== Settings & data ========== -->
+        <section class="tab-panel" id="tab-settings" role="tabpanel">
+            <div class="card">
+                <div class="card-header"><div class="card-title">Settings</div></div>
+                <form id="configForm" novalidate>
+                    <label class="switch field">
+                        <input type="checkbox" id="autoBump">
+                        <span class="switch-track"></span>
+                        <span class="switch-text"><strong>Auto-bump on Active</strong>
+                            <span>Moving a cam to Active sends the active cam with the same die position from another set to Sharpen.</span></span>
+                    </label>
+                    <div class="field" style="max-width:320px">
+                        <label class="field-label" for="defaultLife">Default material life (inches)</label>
+                        <input type="number" id="defaultLife" class="input" step="0.001" min="0.001" max="2" inputmode="decimal">
+                        <span class="field-hint">Material removable per lifespan before refill. Applies to new tools.</span>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save settings</button>
+                </form>
             </div>
 
-        </div><!-- /tab-top5 -->
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">Export</div>
+                        <div class="card-subtitle">CSV files open in Excel or Google Sheets.</div>
+                    </div>
+                </div>
+                <div class="grid grid-3" id="exports"></div>
+            </div>
 
-    </div>
+            <div class="card danger-zone">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title" style="color:var(--danger)">Restore database</div>
+                        <div class="card-subtitle">Replaces ALL current data with a backup file. A copy of the current database is saved on the server first.</div>
+                    </div>
+                </div>
+                <div class="row">
+                    <input type="file" id="dbFile" class="input" accept=".db,.sqlite,.sqlite3" style="flex:1;min-width:220px">
+                    <button type="button" class="btn btn-danger btn-lg" id="importBtn"></button>
+                </div>
+            </div>
+        </section>
+    </main>
 
-    <script src="/static/js/api.js"></script>
     <script src="/static/js/auth.js"></script>
     <script>
-        // Configuration
-        const autoBumpCheckbox = document.getElementById('autoBumpCheckbox');
-        const saveConfigBtn = document.getElementById('saveConfigBtn');
+    (function () {
+        'use strict';
+        var U = UI;
+        var esc = U.esc;
+        var allJobs = [];
+        var loaded = {};
 
-        const defaultMaterialLifeInput = document.getElementById('defaultMaterialLife');
+        // ========== Tabs ==========
 
-        async function loadConfig() {
-            try {
-                const config = await getConfig();
-                autoBumpCheckbox.checked = config.auto_bump_enabled;
-                if (config.default_material_life !== undefined) {
-                    defaultMaterialLifeInput.value = config.default_material_life;
+        var TABS = ['jobs', 'tools', 'top5', 'users', 'settings'];
+        var LOADERS = { jobs: loadJobs, tools: loadTools, top5: loadTop5, users: loadUsers, settings: loadSettings };
+
+        function showTab(name, force) {
+            if (TABS.indexOf(name) < 0) name = 'jobs';
+            document.querySelectorAll('.tab').forEach(function (t) { t.setAttribute('aria-selected', String(t.dataset.tab === name)); });
+            document.querySelectorAll('.tab-panel').forEach(function (p) { p.classList.toggle('hidden', p.id !== 'tab-' + name); });
+            if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+            if (force || !loaded[name]) {
+                loaded[name] = true;
+                LOADERS[name]();
+            }
+        }
+        document.querySelectorAll('.tab').forEach(function (t) {
+            t.addEventListener('click', function () { showTab(t.dataset.tab); });
+        });
+        window.addEventListener('hashchange', function () {
+            if (Auth.isAdmin()) showTab(location.hash.slice(1));
+        });
+
+        function priorityOptions(selected) {
+            return U.PRIORITIES.map(function (p) {
+                return '<option value="' + p + '"' + (p === (selected || 'low') ? ' selected' : '') + '>' + U.capitalize(p) + '</option>';
+            }).join('');
+        }
+
+        function flashRow(el) {
+            el.classList.remove('row-saved');
+            void el.offsetWidth;
+            el.classList.add('row-saved');
+        }
+
+        async function refreshJobs() {
+            allJobs = await API.jobs();
+            document.querySelectorAll('.job-select').forEach(function (sel) {
+                var current = sel.value;
+                sel.innerHTML = '<option value="">Select a job…</option>' + allJobs.slice().sort(function (a, b) {
+                    return Number(a.s_number) - Number(b.s_number);
+                }).map(function (j) {
+                    return '<option value="' + j.id + '">S' + esc(j.s_number) + (j.title ? ' — ' + esc(j.title) : '') + '</option>';
+                }).join('');
+                sel.value = current;
+            });
+        }
+
+        // ========== Jobs ==========
+
+        document.getElementById('newJobBtn').innerHTML = U.icon('plus') + 'New job';
+        var jobsTable = null;
+
+        function jobFormBody(job) {
+            job = job || {};
+            return (job.id ? '' :
+                '<div class="field"><label class="field-label" for="fSnum">S-number</label>' +
+                '<input id="fSnum" class="input" inputmode="numeric" autocomplete="off" placeholder="e.g. 1793" autofocus></div>') +
+                '<div class="field"><label class="field-label" for="fTitle">Title <span class="muted">(optional)</span></label>' +
+                '<input id="fTitle" class="input" maxlength="200" value="' + esc(job.title || '') + '"' + (job.id ? ' autofocus' : '') + '></div>' +
+                (job.id ? '' : '<div class="field"><label class="field-label" for="fPriority">Priority</label><select id="fPriority" class="select">' + priorityOptions('low') + '</select></div>') +
+                '<div class="field"><label class="field-label" for="fNotes">Notes <span class="muted">(optional)</span></label>' +
+                '<textarea id="fNotes" class="textarea" maxlength="1000">' + esc(job.notes || '') + '</textarea></div>';
+        }
+
+        document.getElementById('newJobBtn').addEventListener('click', async function () {
+            var job = await U.openDialog({
+                title: 'New job', confirmLabel: 'Create job', body: jobFormBody(),
+                onConfirm: function (d) {
+                    var s = d.querySelector('#fSnum').value.trim();
+                    if (!s) throw new Error('Enter an S-number');
+                    return API.createJob({
+                        s_number: s,
+                        title: d.querySelector('#fTitle').value.trim() || null,
+                        priority_level: d.querySelector('#fPriority').value,
+                        notes: d.querySelector('#fNotes').value.trim() || null
+                    });
                 }
-            } catch (error) {
-                showConfigAlert(error.message, 'error');
+            });
+            if (job) {
+                U.toast('Job S' + job.s_number + ' created', { type: 'success', action: { label: 'Add tools', onClick: function () {
+                    showTab('tools'); document.getElementById('bulkJob').value = job.id;
+                } } });
+                loadJobs();
+            }
+        });
+
+        async function loadJobs() {
+            try {
+                await refreshJobs();
+                renderJobs();
+            } catch (err) {
+                document.getElementById('jobsTable').innerHTML = U.inlineAlert(err.message, 'error');
             }
         }
 
-        saveConfigBtn.addEventListener('click', async () => {
-            saveConfigBtn.disabled = true;
-            try {
-                const materialLife = parseFloat(defaultMaterialLifeInput.value);
-                if (isNaN(materialLife) || materialLife < 0.001 || materialLife > 2.0) {
-                    throw new Error('Default material life must be between 0.001 and 2.000 inches');
-                }
-                await updateConfig({
-                    auto_bump_enabled: autoBumpCheckbox.checked,
-                    default_material_life: materialLife
+        function filteredJobs() {
+            var q = document.getElementById('jobFilter').value.trim().toLowerCase();
+            return allJobs.filter(function (j) {
+                return !q || String(j.s_number).indexOf(q.replace(/^s/, '')) >= 0 || (j.title || '').toLowerCase().indexOf(q) >= 0;
+            });
+        }
+
+        function renderJobs() {
+            var rows = filteredJobs();
+            document.getElementById('jobCount').textContent = allJobs.length;
+            var columns = [
+                { key: 's_number', label: 'Job', sortValue: function (j) { return Number(j.s_number); }, render: function (j) {
+                    return '<a href="/static/job-detail.html?id=' + j.id + '">' + U.toolId(j.s_number) + '</a>' +
+                        (j.title ? '<div class="muted" style="font-size:0.88rem">' + esc(j.title) + '</div>' : '');
+                } },
+                { key: 'priority_level', label: 'Priority', sortValue: function (j) { return U.PRIORITIES.indexOf(j.priority_level); }, render: function (j) {
+                    return '<select class="select select-sm" data-priority="' + j.id + '" style="width:auto" aria-label="Priority for S' + esc(j.s_number) + '">' + priorityOptions(j.priority_level) + '</select>';
+                } },
+                { key: 'created_at', label: 'Created', render: function (j) { return '<span class="nowrap">' + U.formatDate(j.created_at) + '</span>'; } },
+                { key: null, label: '', className: 'text-right', render: function (j) {
+                    return '<div class="row" style="justify-content:flex-end;gap:0.35rem;flex-wrap:nowrap">' +
+                        '<button type="button" class="btn btn-sm" data-edit-job="' + j.id + '">Edit</button>' +
+                        '<button type="button" class="btn btn-sm btn-ghost" data-delete-job="' + j.id + '" aria-label="Delete S' + esc(j.s_number) + '">' + U.icon('trash') + '</button></div>';
+                } }
+            ];
+            var opts = {
+                rows: rows, sortKey: 's_number',
+                empty: U.emptyState('briefcase', allJobs.length ? 'No jobs match the filter' : 'No jobs yet', allJobs.length ? '' : 'Create the first job to start tracking tools.'),
+                onRender: bindJobRows
+            };
+            if (jobsTable) jobsTable.update(rows);
+            else jobsTable = U.sortableTable(document.getElementById('jobsTable'), columns, opts);
+        }
+
+        function jobById(id) { return allJobs.filter(function (j) { return j.id === Number(id); })[0]; }
+
+        function bindJobRows(root) {
+            root.querySelectorAll('[data-priority]').forEach(function (sel) {
+                sel.addEventListener('change', async function () {
+                    var job = jobById(sel.dataset.priority);
+                    var next = sel.value;
+                    var reason = await U.promptDialog('Change S' + job.s_number + ' to ' + U.capitalize(next) + '?', {
+                        label: 'Reason (recorded in the audit log)', placeholder: 'e.g. Customer expedite', confirmLabel: 'Change priority',
+                        requiredMessage: 'A reason is required'
+                    });
+                    if (!reason) { sel.value = job.priority_level || 'low'; return; }
+                    try {
+                        await API.updateJob(job.id, { priority_level: next, reason: reason, source: 'all_jobs' });
+                        job.priority_level = next;
+                        flashRow(sel.closest('tr'));
+                        U.toast('S' + job.s_number + ' priority set to ' + U.capitalize(next), { type: 'success' });
+                    } catch (err) {
+                        sel.value = job.priority_level || 'low';
+                        U.toast(err.message, { type: 'error' });
+                    }
                 });
-                showConfigAlert('Configuration saved successfully', 'success');
-            } catch (error) {
-                showConfigAlert(error.message, 'error');
-            } finally {
-                saveConfigBtn.disabled = false;
-            }
-        });
+            });
+            root.querySelectorAll('[data-edit-job]').forEach(function (btn) {
+                btn.addEventListener('click', async function () {
+                    var job = jobById(btn.dataset.editJob);
+                    var saved = await U.openDialog({
+                        title: 'Edit S' + job.s_number, confirmLabel: 'Save', body: jobFormBody(job),
+                        onConfirm: function (d) {
+                            return API.updateJob(job.id, { title: d.querySelector('#fTitle').value.trim(), notes: d.querySelector('#fNotes').value.trim() });
+                        }
+                    });
+                    if (saved) { U.toast('S' + job.s_number + ' saved', { type: 'success' }); loadJobs(); }
+                });
+            });
+            root.querySelectorAll('[data-delete-job]').forEach(function (btn) {
+                btn.addEventListener('click', async function () {
+                    var job = jobById(btn.dataset.deleteJob);
+                    var ok = await U.openDialog({
+                        title: 'Delete S' + job.s_number + '?', danger: true, confirmLabel: 'Delete job',
+                        text: 'This permanently deletes the job with all of its tools, move history and lifespans. Type the S-number to confirm.',
+                        body: '<input id="fConfirm" class="input" inputmode="numeric" autocomplete="off" autofocus placeholder="' + esc(job.s_number) + '">',
+                        onConfirm: function (d) {
+                            if (d.querySelector('#fConfirm').value.trim().replace(/^s/i, '') !== String(job.s_number)) throw new Error('S-number does not match');
+                            return API.deleteJob(job.id);
+                        }
+                    });
+                    if (ok) { U.toast('S' + job.s_number + ' deleted', { type: 'success' }); loadJobs(); }
+                });
+            });
+        }
 
-        // Create Job
-        const createJobForm = document.getElementById('createJobForm');
-        createJobForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
+        document.getElementById('jobFilter').addEventListener('input', U.debounce(function () { if (jobsTable) jobsTable.update(filteredJobs()); }, 150));
 
-            const submitBtn = e.target.querySelector('button[type="submit"]');
-            submitBtn.disabled = true;
+        // ========== Tools ==========
 
-            try {
-                const jobData = {
-                    s_number: document.getElementById('sNumber').value.trim(),
-                    title: document.getElementById('jobTitle').value.trim() || null,
-                    notes: document.getElementById('jobNotes').value.trim() || null
-                };
-
-                await createJob(jobData);
-                showJobAlert(`Job S${jobData.s_number} created successfully`, 'success');
-                createJobForm.reset();
-                loadAllJobs();
-                loadJobsForBulk();
-            } catch (error) {
-                showJobAlert(error.message, 'error');
-            } finally {
-                submitBtn.disabled = false;
-            }
-        });
-
-        // Bulk Create CAM Items
-        const bulkCreateForm = document.getElementById('bulkCreateForm');
-        const bulkJobId = document.getElementById('bulkJobId');
-        const camConfigRows = document.getElementById('camConfigRows');
-        const addCamBtn = document.getElementById('addCamBtn');
-        let camCounter = 0;
+        var camRows = document.getElementById('camRows');
+        document.getElementById('addCamBtn').innerHTML = U.icon('plus') + 'Add cam';
 
         function addCamRow() {
-            camCounter++;
-            const row = document.createElement('div');
+            var row = document.createElement('div');
             row.className = 'cam-config-row';
-            row.dataset.camIndex = camCounter;
-            row.style.cssText = 'display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.5rem; padding: 0.5rem; background: #f8fafc; border-radius: 4px;';
-            row.innerHTML = `
-                <span style="font-weight: bold; min-width: 70px;">CAM ${camCounter}</span>
-                <select class="form-select cam-die-position" style="padding: 0.5rem; flex: 1;">
-                    <option value="">Die Position...</option>
-                    <option value="upper">Upper</option>
-                    <option value="lower">Lower</option>
-                </select>
-                <select class="form-select cam-enter-die-steel" style="padding: 0.5rem; flex: 1;">
-                    <option value="">Orientation...</option>
-                    <option value="enter">Enter</option>
-                    <option value="exit">Exit</option>
-                </select>
-                <button type="button" class="btn btn-danger remove-cam-btn" style="padding: 0.5rem 0.75rem; min-height: auto;">X</button>
-            `;
-            camConfigRows.appendChild(row);
-            row.querySelector('.remove-cam-btn').addEventListener('click', () => {
-                row.remove();
-                renumberCamRows();
+            row.innerHTML = '<strong></strong>' +
+                '<select class="select select-sm cam-die" aria-label="Die position"><option value="">Die position…</option><option value="upper">Upper</option><option value="lower">Lower</option></select>' +
+                '<select class="select select-sm cam-orient" aria-label="Orientation"><option value="">Orientation…</option><option value="enter">Enter</option><option value="exit">Exit</option></select>' +
+                '<button type="button" class="btn btn-sm btn-ghost btn-icon" aria-label="Remove cam">' + U.icon('x') + '</button>';
+            row.querySelector('button').addEventListener('click', function () {
+                if (camRows.children.length > 1) { row.remove(); renumberCams(); }
             });
+            camRows.appendChild(row);
+            renumberCams();
         }
 
-        function renumberCamRows() {
-            const rows = camConfigRows.querySelectorAll('.cam-config-row');
-            camCounter = 0;
-            rows.forEach((row, index) => {
-                camCounter = index + 1;
-                row.dataset.camIndex = camCounter;
-                row.querySelector('span').textContent = `CAM ${camCounter}`;
+        function renumberCams() {
+            Array.prototype.forEach.call(camRows.children, function (row, i) {
+                row.querySelector('strong').textContent = 'Cam ' + (i + 1);
             });
+            updatePreview();
         }
 
-        addCamBtn.addEventListener('click', addCamRow);
+        function updatePreview() {
+            var sets = parseInt(document.getElementById('numSets').value, 10) || 0;
+            var cams = camRows.children.length;
+            document.getElementById('bulkPreview').textContent =
+                sets + ' set' + (sets === 1 ? '' : 's') + ' × ' + cams + ' cam' + (cams === 1 ? '' : 's') + ' = ' + (sets * cams) + ' tools';
+        }
+
+        document.getElementById('addCamBtn').addEventListener('click', addCamRow);
+        document.getElementById('numSets').addEventListener('input', updatePreview);
         addCamRow();
 
-        bulkCreateForm.addEventListener('submit', async (e) => {
+        document.getElementById('bulkForm').addEventListener('submit', async function (e) {
             e.preventDefault();
-
-            const submitBtn = e.target.querySelector('button[type="submit"]');
-            submitBtn.disabled = true;
-
-            try {
-                const numSets = parseInt(document.getElementById('numSets').value);
-                if (!numSets || numSets < 1) {
-                    throw new Error('Please enter a valid number of sets');
-                }
-
-                const camRows = camConfigRows.querySelectorAll('.cam-config-row');
-                if (camRows.length === 0) {
-                    throw new Error('Please add at least one CAM configuration');
-                }
-
-                const cams = [];
-                camRows.forEach((row, index) => {
-                    const diePosition = row.querySelector('.cam-die-position').value || null;
-                    const enterDieSteel = row.querySelector('.cam-enter-die-steel').value || null;
-                    cams.push({
-                        cam_no: index + 1,
-                        die_position: diePosition,
-                        enter_die_steel: enterDieSteel,
-                        exit_die_steel: null
-                    });
-                });
-
-                const bulkData = {
-                    job_id: parseInt(bulkJobId.value),
-                    num_sets: numSets,
-                    cams: cams
-                };
-
-                const result = await createCamItemsBulk(bulkData);
-                showBulkAlert(`Created ${result.created_count} CAM items successfully`, 'success');
-
-                bulkCreateForm.reset();
-                camConfigRows.innerHTML = '';
-                camCounter = 0;
-                addCamRow();
-
-                // Refresh the edit jobs dropdown so the job appears there
-                await loadJobsForEdit();
-            } catch (error) {
-                showBulkAlert(error.message, 'error');
-            } finally {
-                submitBtn.disabled = false;
-            }
-        });
-
-        // Load jobs for bulk create dropdown
-        async function loadJobsForBulk() {
-            try {
-                const jobs = await getJobs();
-                bulkJobId.innerHTML = '<option value="">Select a job...</option>';
-                jobs.forEach(job => {
-                    const option = document.createElement('option');
-                    option.value = job.id;
-                    option.textContent = `S${job.s_number} - ${job.title || '(no title)'}`;
-                    bulkJobId.appendChild(option);
-                });
-            } catch (error) {
-                console.error('Failed to load jobs:', error);
-            }
-        }
-
-        // Jobs List
-        const jobSearchInput = document.getElementById('jobSearchInput');
-        const jobsListContent = document.getElementById('jobsListContent');
-        let allJobs = [];
-        let searchTimeout = null;
-
-        // Load all jobs on page load
-        loadAllJobs();
-
-        // Search with debounce
-        jobSearchInput.addEventListener('input', (e) => {
-            clearTimeout(searchTimeout);
-            searchTimeout = setTimeout(() => {
-                filterAndDisplayJobs(e.target.value.trim());
-            }, 300); // 300ms debounce
-        });
-
-        async function loadAllJobs() {
-            try {
-                allJobs = await getJobs();
-                filterAndDisplayJobs(''); // Show all initially
-            } catch (error) {
-                jobsListContent.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
-            }
-        }
-
-        function filterAndDisplayJobs(searchQuery) {
-            let filteredJobs = allJobs;
-
-            // Filter if search query is provided and has at least 2 characters
-            if (searchQuery && searchQuery.length >= 2) {
-                const query = searchQuery.toLowerCase();
-                filteredJobs = allJobs.filter(job => {
-                    const sNumber = job.s_number.toString().toLowerCase();
-                    const title = (job.title || '').toLowerCase();
-                    return sNumber.includes(query) || title.includes(query);
-                });
-            }
-
-            displayJobsList(filteredJobs, searchQuery);
-        }
-
-        function displayJobsList(jobs, searchQuery) {
-            if (jobs.length === 0) {
-                if (searchQuery) {
-                    jobsListContent.innerHTML = '<p class="text-center">No jobs found matching your search.</p>';
-                } else {
-                    jobsListContent.innerHTML = '<p class="text-center">No jobs found. Create one above.</p>';
-                }
-                return;
-            }
-
-            const html = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>S-Number</th>
-                                <th>Title</th>
-                                <th>Priority</th>
-                                <th>Created</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${jobs.map(job => `
-                                <tr>
-                                    <td><strong>S${job.s_number}</strong></td>
-                                    <td>${job.title || '-'}</td>
-                                    <td>
-                                        <select class="form-select priority-select" data-job-id="${job.id}" style="padding: 0.5rem;">
-                                            <option value="low" ${(job.priority_level || 'low') === 'low' ? 'selected' : ''}>Low</option>
-                                            <option value="medium" ${job.priority_level === 'medium' ? 'selected' : ''}>Medium</option>
-                                            <option value="high" ${job.priority_level === 'high' ? 'selected' : ''}>High</option>
-                                            <option value="urgent" ${job.priority_level === 'urgent' ? 'selected' : ''}>Urgent</option>
-                                            <option value="top" ${job.priority_level === 'top' ? 'selected' : ''}>Top</option>
-                                        </select>
-                                    </td>
-                                    <td>${formatDate(job.created_at)}</td>
-                                    <td>
-                                        <a href="/static/job-detail.html?id=${job.id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
-                                            View
-                                        </a>
-                                    </td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                `;
-
-            jobsListContent.innerHTML = html;
-
-            // Add event listeners for priority selectors
-            document.querySelectorAll('.priority-select').forEach(select => {
-                select.addEventListener('change', async (e) => {
-                    const jobId = parseInt(e.target.dataset.jobId);
-                    const newPriority = e.target.value;
-                    const originalValue = e.target.dataset.original || e.target.value;
-
-                    // Skip if no actual change
-                    if (newPriority === originalValue) return;
-
-                    // Prompt for reason
-                    const reason = prompt('Reason for changing priority to ' + newPriority + ':');
-                    if (!reason || !reason.trim()) {
-                        e.target.value = originalValue;
-                        return;
-                    }
-
-                    e.target.disabled = true;
-
-                    try {
-                        await updateJob(jobId, {
-                            priority_level: newPriority,
-                            reason: reason.trim(),
-                            source: 'all_jobs'
-                        });
-                        e.target.dataset.original = newPriority;
-                        // Show brief success indicator
-                        e.target.style.backgroundColor = '#dcfce7';
-                        setTimeout(() => {
-                            e.target.style.backgroundColor = '';
-                        }, 1000);
-
-                        // Update the job in allJobs array
-                        const jobIndex = allJobs.findIndex(j => j.id === jobId);
-                        if (jobIndex !== -1) {
-                            allJobs[jobIndex].priority_level = newPriority;
-                        }
-                    } catch (error) {
-                        alert('Failed to update priority: ' + error.message);
-                        e.target.value = originalValue;
-                    } finally {
-                        e.target.disabled = false;
-                    }
-                });
-                // Store original value
-                select.dataset.original = select.value;
+            var btn = e.target.querySelector('[type="submit"]');
+            var jobId = parseInt(document.getElementById('bulkJob').value, 10);
+            var numSets = parseInt(document.getElementById('numSets').value, 10);
+            if (!jobId) { U.toast('Choose a job first', { type: 'warning' }); return; }
+            if (!numSets || numSets < 1 || numSets > 100) { U.toast('Number of sets must be 1–100', { type: 'warning' }); return; }
+            var cams = Array.prototype.map.call(camRows.children, function (row, i) {
+                return { cam_no: i + 1, die_position: row.querySelector('.cam-die').value || null,
+                         enter_die_steel: row.querySelector('.cam-orient').value || null, exit_die_steel: null };
             });
+            U.setLoading(btn, true);
+            try {
+                var result = await API.createCamItemsBulk({ job_id: jobId, num_sets: numSets, cams: cams });
+                U.toast(result.created_count + ' tools ready', { type: 'success', detail: 'Existing tools were left unchanged.' });
+                document.getElementById('editJob').value = jobId;
+                loadEditTools();
+            } catch (err) {
+                U.toast(err.message, { type: 'error' });
+            } finally {
+                U.setLoading(btn, false);
+            }
+        });
+
+        async function loadTools() {
+            try { await refreshJobs(); } catch (err) { U.toast(err.message, { type: 'error' }); }
+            loadEditTools();
         }
 
-        // CAM Items Editing
-        const editJobSelect = document.getElementById('editJobSelect');
-        const camItemsList = document.getElementById('camItemsList');
-        const camItemsContent = document.getElementById('camItemsContent');
+        document.getElementById('editJob').addEventListener('change', loadEditTools);
 
-        editJobSelect.addEventListener('change', async () => {
-            const jobId = editJobSelect.value;
+        async function loadEditTools() {
+            var container = document.getElementById('editTools');
+            var jobId = document.getElementById('editJob').value;
             if (!jobId) {
-                camItemsList.classList.add('hidden');
+                container.innerHTML = U.emptyState('tool', 'Choose a job to edit its tools');
                 return;
             }
-
+            container.innerHTML = '<div class="spinner"></div>';
             try {
-                const data = await getJob(jobId);
-                displayCamItems(data.cam_items, data.job);
-                camItemsList.classList.remove('hidden');
-            } catch (error) {
-                showCamEditAlert(error.message, 'error');
+                var data = await API.job(jobId);
+                if (!data.cam_items.length) {
+                    container.innerHTML = U.emptyState('tool', 'This job has no tools yet', 'Use “Add sets & cams” above.');
+                    return;
+                }
+                var prevSet = null;
+                container.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr><th>Set</th><th>Cam</th><th>Station</th>' +
+                    '<th>Die position</th><th>Orientation</th><th>Material life (in)</th><th>Notes</th></tr></thead><tbody>' +
+                    data.cam_items.map(function (c) {
+                        var newSet = c.set_no !== prevSet;
+                        prevSet = c.set_no;
+                        return '<tr data-cam="' + c.id + '" class="' + (newSet ? 'set-start' : '') + '">' +
+                            '<td class="nowrap">' + (newSet ? '<strong>Set ' + c.set_no + '</strong>' : '') + '</td><td class="nowrap">Cam ' + c.cam_no + '</td>' +
+                            '<td>' + U.stationBadge(c.status_station) + '</td>' +
+                            '<td><select class="select select-sm" data-field="die_position"><option value="">—</option>' +
+                            ['upper', 'lower'].map(function (v) { return '<option value="' + v + '"' + (c.die_position === v ? ' selected' : '') + '>' + U.capitalize(v) + '</option>'; }).join('') + '</select></td>' +
+                            '<td><select class="select select-sm" data-field="enter_die_steel"><option value="">—</option>' +
+                            ['enter', 'exit'].map(function (v) { return '<option value="' + v + '"' + (c.enter_die_steel === v ? ' selected' : '') + '>' + U.capitalize(v) + '</option>'; }).join('') + '</select></td>' +
+                            '<td><input type="number" class="input input-sm" data-field="max_material_life" step="0.001" min="0.001" max="2" inputmode="decimal" style="width:7rem" value="' + esc(c.max_material_life) + '"></td>' +
+                            '<td><input type="text" class="input input-sm" data-field="notes" maxlength="1000" style="min-width:12rem" value="' + esc(c.notes || '') + '"></td></tr>';
+                    }).join('') + '</tbody></table></div>';
+                container.querySelectorAll('[data-field]').forEach(function (field) {
+                    field.addEventListener('change', function () { saveTool(field.closest('tr')); });
+                    if (field.type === 'text') field.addEventListener('keydown', function (e) { if (e.key === 'Enter') field.blur(); });
+                });
+            } catch (err) {
+                container.innerHTML = U.inlineAlert(err.message, 'error');
             }
-        });
-
-        function displayCamItems(camItems, job) {
-            if (camItems.length === 0) {
-                camItemsContent.innerHTML = '<p>No CAM items for this job. Create them using Bulk Create above.</p>';
-                return;
-            }
-
-            const html = `
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Set</th>
-                            <th>Cam</th>
-                            <th>Die Position</th>
-                            <th>Orientation</th>
-                            <th>Station</th>
-                            <th>Notes</th>
-                            <th>Material Life</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${camItems.map(cam => `
-                            <tr data-cam-id="${cam.id}">
-                                <td><strong>${cam.set_no}</strong></td>
-                                <td>${cam.cam_no}</td>
-                                <td>
-                                    <select class="form-select cam-field" data-field="die_position" data-cam-id="${cam.id}" style="padding: 0.5rem;">
-                                        <option value="" ${!cam.die_position ? 'selected' : ''}>-</option>
-                                        <option value="upper" ${cam.die_position === 'upper' ? 'selected' : ''}>Upper</option>
-                                        <option value="lower" ${cam.die_position === 'lower' ? 'selected' : ''}>Lower</option>
-                                    </select>
-                                </td>
-                                <td>
-                                    <select class="form-select cam-field" data-field="enter_die_steel" data-cam-id="${cam.id}" style="padding: 0.5rem;">
-                                        <option value="" ${!cam.enter_die_steel ? 'selected' : ''}>-</option>
-                                        <option value="enter" ${cam.enter_die_steel === 'enter' ? 'selected' : ''}>Enter</option>
-                                        <option value="exit" ${cam.enter_die_steel === 'exit' ? 'selected' : ''}>Exit</option>
-                                    </select>
-                                </td>
-                                <td><span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span></td>
-                                <td>
-                                    <input type="text" class="form-input cam-field" data-field="notes" data-cam-id="${cam.id}"
-                                        value="${cam.notes || ''}" placeholder="Notes" style="padding: 0.5rem;">
-                                </td>
-                                <td>
-                                    <input type="number" class="form-input cam-field" data-field="max_material_life" data-cam-id="${cam.id}"
-                                        value="${cam.max_material_life || 0.375}" step="0.001" min="0.001" max="2.000"
-                                        style="padding: 0.5rem; width: 80px;">
-                                </td>
-                                <td>
-                                    <button class="btn btn-success save-cam-btn" data-cam-id="${cam.id}" style="padding: 0.5rem 1rem;">
-                                        Save
-                                    </button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            `;
-
-            camItemsContent.innerHTML = html;
-
-            // Add event listeners for save buttons
-            document.querySelectorAll('.save-cam-btn').forEach(btn => {
-                btn.addEventListener('click', async (e) => {
-                    const camId = parseInt(e.target.dataset.camId);
-                    await saveCamItem(camId);
-                });
-            });
-
-            // Add enter key listener for text inputs
-            document.querySelectorAll('.cam-field[type="text"]').forEach(input => {
-                input.addEventListener('keypress', async (e) => {
-                    if (e.key === 'Enter') {
-                        const camId = parseInt(e.target.dataset.camId);
-                        await saveCamItem(camId);
-                    }
-                });
-            });
-
-            // Add change listener for selects
-            document.querySelectorAll('.cam-field[class*="select"]').forEach(select => {
-                select.addEventListener('change', async (e) => {
-                    const camId = parseInt(e.target.dataset.camId);
-                    await saveCamItem(camId);
-                });
-            });
         }
 
-        async function saveCamItem(camId) {
-            const row = document.querySelector(`tr[data-cam-id="${camId}"]`);
-            const fields = row.querySelectorAll('.cam-field');
-            const updates = {};
+        async function saveTool(row) {
+            var updates = {};
+            row.querySelectorAll('[data-field]').forEach(function (f) {
+                var v = f.value.trim();
+                if (f.dataset.field === 'max_material_life') { if (v) updates.max_material_life = parseFloat(v); }
+                else if (f.dataset.field === 'notes') updates.notes = v;
+                else if (v) updates[f.dataset.field] = v;
+            });
+            try {
+                await API.updateCamItem(row.dataset.cam, updates);
+                flashRow(row);
+            } catch (err) {
+                U.toast('Not saved: ' + err.message, { type: 'error' });
+            }
+        }
 
-            fields.forEach(field => {
-                const fieldName = field.dataset.field;
-                const value = field.value.trim();
-                if (fieldName === 'max_material_life') {
-                    updates[fieldName] = value ? parseFloat(value) : null;
-                } else {
-                    updates[fieldName] = value || null;
+        // ========== Top 5 ==========
+
+        var top5 = [], swapJobs = [];
+        var POSITION_PRIORITIES = ['top', 'urgent', 'high', 'medium', 'low'];
+        document.getElementById('refreshTop5Btn').innerHTML = U.icon('refresh') + 'Refresh';
+        document.getElementById('refreshTop5Btn').addEventListener('click', loadTop5);
+        document.getElementById('escalationPeriod').addEventListener('change', loadEscalation);
+
+        async function loadTop5() {
+            try {
+                var data = await API.top5();
+                top5 = data.top5.slice(0, 5);
+                swapJobs = data.all_jobs;
+                renderTop5();
+            } catch (err) {
+                document.getElementById('top5Table').innerHTML = U.inlineAlert(err.message, 'error');
+            }
+            loadAudit();
+            loadEscalation();
+        }
+
+        function renderTop5() {
+            var el = document.getElementById('top5Table');
+            if (!top5.length) {
+                el.innerHTML = U.emptyState('trophy', 'No jobs yet');
+                return;
+            }
+            el.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr><th></th><th>#</th><th>Job</th><th>Priority</th>' +
+                '<th class="num">Score</th><th class="num">In sharpen</th><th class="text-right">Actions</th></tr></thead><tbody>' +
+                top5.map(function (j, i) {
+                    return '<tr class="drag-row" draggable="true" data-index="' + i + '">' +
+                        '<td class="drag-handle">' + U.icon('grip') + '</td><td><span class="rank">' + (i + 1) + '</span></td>' +
+                        '<td><a href="/static/job-detail.html?id=' + j.job_id + '">' + U.toolId(j.s_number) + '</a>' +
+                        (j.title ? '<div class="muted" style="font-size:0.88rem">' + esc(j.title) + '</div>' : '') + '</td>' +
+                        '<td>' + U.priorityBadge(POSITION_PRIORITIES[i]) + '</td>' +
+                        '<td class="num">' + (j.priority_score !== undefined ? j.priority_score : '—') + '</td>' +
+                        '<td class="num">' + (j.sharpen_count !== undefined ? j.sharpen_count : '—') + '</td>' +
+                        '<td class="text-right"><div class="row" style="justify-content:flex-end;gap:0.35rem;flex-wrap:nowrap">' +
+                        '<button type="button" class="btn btn-sm btn-icon" data-up="' + i + '" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
+                        '<button type="button" class="btn btn-sm btn-icon" data-down="' + i + '" aria-label="Move down"' + (i === top5.length - 1 ? ' disabled' : '') + '>▼</button>' +
+                        '<button type="button" class="btn btn-sm" data-swap="' + i + '">' + U.icon('swap') + 'Swap</button></div></td></tr>';
+                }).join('') + '</tbody></table></div>';
+
+            var dragFrom = null;
+            el.querySelectorAll('.drag-row').forEach(function (row) {
+                row.addEventListener('dragstart', function (e) { dragFrom = Number(row.dataset.index); row.classList.add('is-dragging'); e.dataTransfer.effectAllowed = 'move'; });
+                row.addEventListener('dragend', function () { row.classList.remove('is-dragging'); el.querySelectorAll('.drag-over').forEach(function (r) { r.classList.remove('drag-over'); }); });
+                row.addEventListener('dragover', function (e) { e.preventDefault(); row.classList.add('drag-over'); });
+                row.addEventListener('dragleave', function () { row.classList.remove('drag-over'); });
+                row.addEventListener('drop', function (e) {
+                    e.preventDefault();
+                    var to = Number(row.dataset.index);
+                    if (dragFrom !== null && dragFrom !== to) moveTop5(dragFrom, to);
+                });
+            });
+            el.querySelectorAll('[data-up]').forEach(function (b) { b.addEventListener('click', function () { var i = Number(b.dataset.up); moveTop5(i, i - 1); }); });
+            el.querySelectorAll('[data-down]').forEach(function (b) { b.addEventListener('click', function () { var i = Number(b.dataset.down); moveTop5(i, i + 1); }); });
+            el.querySelectorAll('[data-swap]').forEach(function (b) { b.addEventListener('click', function () { swapTop5(Number(b.dataset.swap)); }); });
+        }
+
+        function moveTop5(from, to) {
+            var item = top5.splice(from, 1)[0];
+            top5.splice(to, 0, item);
+            renderTop5();
+            saveTop5();
+        }
+
+        async function saveTop5() {
+            try {
+                var result = await API.reorderTop5(top5.map(function (j) { return j.job_id; }));
+                if (result.priority_changes.length) U.toast(result.priority_changes.length + ' priorit' + (result.priority_changes.length === 1 ? 'y' : 'ies') + ' updated', { type: 'success' });
+                loadAudit();
+            } catch (err) {
+                U.toast('Order not saved: ' + err.message, { type: 'error' });
+                loadTop5();
+            }
+        }
+
+        async function swapTop5(index) {
+            var inTop = top5.map(function (j) { return j.job_id; });
+            var candidates = swapJobs.filter(function (j) { return inTop.indexOf(j.id) < 0; });
+            var chosen = null;
+            function list(q) {
+                q = (q || '').toLowerCase().replace(/^s/, '');
+                var rows = candidates.filter(function (j) { return !q || String(j.s_number).indexOf(q) >= 0 || (j.title || '').toLowerCase().indexOf(q) >= 0; }).slice(0, 30);
+                return rows.length ? rows.map(function (j) {
+                    return '<button type="button" class="attention-item" data-pick="' + j.id + '"><div>' + U.toolId(j.s_number) +
+                        (j.title ? ' <span class="muted">' + esc(j.title) + '</span>' : '') + '</div>' + U.priorityBadge(j.priority_level) + '</button>';
+                }).join('') : U.emptyState('search', 'No matching jobs');
+            }
+            var picked = await U.openDialog({
+                title: 'Replace #' + (index + 1) + ' S' + top5[index].s_number, wide: true, confirmLabel: 'Close', cancelLabel: false,
+                body: '<input type="search" class="input" id="swapFilter" placeholder="Filter by S-number or title" autofocus style="margin-bottom:0.75rem">' +
+                    '<div class="attention-list" id="swapList" style="max-height:50vh;overflow:auto">' + list('') + '</div>',
+                onOpen: function (d) {
+                    function bind() {
+                        d.querySelectorAll('[data-pick]').forEach(function (b) {
+                            b.addEventListener('click', function () { chosen = Number(b.dataset.pick); d.querySelector('form').requestSubmit(); });
+                        });
+                    }
+                    d.querySelector('#swapFilter').addEventListener('input', function (e) { d.querySelector('#swapList').innerHTML = list(e.target.value); bind(); });
+                    bind();
+                },
+                onConfirm: function () { return chosen; }
+            });
+            if (typeof picked !== 'number') return;
+            var job = swapJobs.filter(function (j) { return j.id === picked; })[0];
+            top5[index] = { job_id: job.id, s_number: job.s_number, title: job.title, priority_level: job.priority_level };
+            renderTop5();
+            saveTop5();
+        }
+
+        async function loadAudit() {
+            var el = document.getElementById('auditLog');
+            try {
+                var data = await API.priorityChanges({ limit: 25 });
+                U.sortableTable(el, [
+                    { key: 'changed_at', label: 'When', render: function (c) { return '<span class="nowrap" title="' + esc(U.formatDateTime(c.changed_at)) + '">' + U.timeAgo(c.changed_at) + '</span>'; } },
+                    { key: 's_number', label: 'Job', render: function (c) { return U.toolId(c.s_number); } },
+                    { key: 'changed_by_username', label: 'By', render: function (c) { return esc(c.changed_by_username); } },
+                    { key: 'new_priority', label: 'Change', sortable: false, render: function (c) { return '<span class="nowrap">' + U.priorityBadge(c.old_priority) + '<span class="arrow">→</span>' + U.priorityBadge(c.new_priority) + '</span>'; } },
+                    { key: 'reason', label: 'Reason', render: function (c) { return esc(c.reason); } },
+                    { key: 'source', label: 'Source', render: function (c) { return c.source === 'top5' ? 'Top 5' : 'All jobs'; } }
+                ], { rows: data.items, sortKey: 'changed_at', empty: U.emptyState('clock', 'No priority changes yet') });
+            } catch (err) {
+                el.innerHTML = U.inlineAlert(err.message, 'error');
+            }
+        }
+
+        async function loadEscalation() {
+            var el = document.getElementById('escalation');
+            var days = parseInt(document.getElementById('escalationPeriod').value, 10);
+            try {
+                var d = await API.priorityAnalytics(days);
+                var viaTop5 = (d.by_source.filter(function (s) { return s.source === 'top5'; })[0] || { count: 0 }).count;
+                var html = '<div class="grid grid-3" style="margin-bottom:1rem">' +
+                    '<div class="stat"><div class="stat-label">Changes</div><div class="stat-value">' + d.total_changes + '</div><div class="stat-sub">Last ' + days + ' days</div></div>' +
+                    '<div class="stat"><div class="stat-label">Jobs changed</div><div class="stat-value">' + d.most_changed_jobs.length + '</div></div>' +
+                    '<div class="stat"><div class="stat-label">Via Top 5</div><div class="stat-value">' + viaTop5 + '</div></div></div>';
+                if (!d.total_changes) {
+                    el.innerHTML = html + U.emptyState('chart', 'No priority changes in this period');
+                    return;
+                }
+                el.innerHTML = html + '<div class="grid grid-2"><div><h3 class="section-title" style="margin-top:0">Most escalated jobs</h3><div id="escJobs"></div></div>' +
+                    '<div><h3 class="section-title" style="margin-top:0">Transitions</h3><div id="escTransitions"></div></div></div>';
+                U.sortableTable(document.getElementById('escJobs'), [
+                    { key: 's_number', label: 'Job', render: function (j) { return U.toolId(j.s_number); } },
+                    { key: 'priority_level', label: 'Now', render: function (j) { return U.priorityBadge(j.priority_level); } },
+                    { key: 'change_count', label: 'Changes', className: 'num', render: function (j) { return j.change_count; } },
+                    { key: 'escalation_count', label: 'Escalations', className: 'num', render: function (j) { return j.escalation_count; } }
+                ], { rows: d.most_changed_jobs, sortKey: 'escalation_count' });
+                U.sortableTable(document.getElementById('escTransitions'), [
+                    { key: 'old_priority', label: 'From', render: function (t) { return U.priorityBadge(t.old_priority); } },
+                    { key: 'new_priority', label: 'To', render: function (t) { return U.priorityBadge(t.new_priority); } },
+                    { key: 'count', label: 'Count', className: 'num', render: function (t) { return t.count; } }
+                ], { rows: d.transitions, sortKey: 'count' });
+            } catch (err) {
+                el.innerHTML = U.inlineAlert(err.message, 'error');
+            }
+        }
+
+        // ========== Users ==========
+
+        document.getElementById('newUserBtn').innerHTML = U.icon('plus') + 'Add user';
+        var users = [];
+
+        function pinFields() {
+            return '<div class="grid grid-2"><div class="field"><label class="field-label" for="fPin">PIN</label>' +
+                '<input id="fPin" class="input" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="20"></div>' +
+                '<div class="field"><label class="field-label" for="fPin2">Confirm PIN</label>' +
+                '<input id="fPin2" class="input" type="password" inputmode="numeric" autocomplete="new-password" maxlength="20"></div></div>';
+        }
+
+        function readPin(d) {
+            var pin = d.querySelector('#fPin').value;
+            if (pin.length < 4) throw new Error('PIN must be at least 4 characters');
+            if (pin !== d.querySelector('#fPin2').value) throw new Error('PINs do not match');
+            return pin;
+        }
+
+        document.getElementById('newUserBtn').addEventListener('click', async function () {
+            var created = await U.openDialog({
+                title: 'Add user', confirmLabel: 'Add user',
+                body: '<div class="grid grid-2"><div class="field"><label class="field-label" for="fName">Display name</label><input id="fName" class="input" maxlength="100" autofocus placeholder="Jane Smith"></div>' +
+                    '<div class="field"><label class="field-label" for="fUser">Username</label><input id="fUser" class="input" maxlength="50" autocapitalize="off" placeholder="jsmith"></div></div>' +
+                    pinFields() +
+                    '<div class="field"><label class="field-label" for="fRole">Role</label><select id="fRole" class="select"><option value="user">User — record moves</option><option value="admin">Admin — full access</option></select></div>',
+                onOpen: function (d) {
+                    var name = d.querySelector('#fName'), user = d.querySelector('#fUser');
+                    name.addEventListener('input', function () {
+                        if (!user.dataset.touched) user.value = name.value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+                    });
+                    user.addEventListener('input', function () { user.dataset.touched = '1'; });
+                },
+                onConfirm: function (d) {
+                    var name = d.querySelector('#fName').value.trim();
+                    var username = d.querySelector('#fUser').value.trim();
+                    if (!name || !username) throw new Error('Display name and username are required');
+                    return API.createUser({ display_name: name, username: username, pin: readPin(d), role: d.querySelector('#fRole').value });
                 }
             });
-
-            try {
-                await updateCamItem(camId, updates);
-                // Show success
-                row.style.backgroundColor = '#dcfce7';
-                setTimeout(() => {
-                    row.style.backgroundColor = '';
-                }, 1000);
-                showCamEditAlert('CAM item updated successfully', 'success');
-            } catch (error) {
-                showCamEditAlert('Failed to update: ' + error.message, 'error');
-            }
-        }
-
-        // Populate edit job select
-        async function loadJobsForEdit() {
-            try {
-                const jobs = await getJobs();
-                editJobSelect.innerHTML = '<option value="">Select a job to view its CAM items...</option>';
-                jobs.forEach(job => {
-                    const option = document.createElement('option');
-                    option.value = job.id;
-                    option.textContent = `S${job.s_number} - ${job.title || '(no title)'}`;
-                    editJobSelect.appendChild(option);
-                });
-            } catch (error) {
-                console.error('Failed to load jobs for editing:', error);
-            }
-        }
-
-        function showCamEditAlert(message, type) {
-            showAlertInContainer('camEditAlerts', message, type);
-        }
-
-        // Alert helpers
-        function showConfigAlert(message, type) {
-            showAlertInContainer('configAlerts', message, type);
-        }
-
-        function showJobAlert(message, type) {
-            showAlertInContainer('jobAlerts', message, type);
-        }
-
-        function showBulkAlert(message, type) {
-            showAlertInContainer('bulkAlerts', message, type);
-        }
-
-        function showAlertInContainer(containerId, message, type) {
-            const container = document.getElementById(containerId);
-            container.innerHTML = '';
-            const alertDiv = document.createElement('div');
-            alertDiv.className = `alert alert-${type}`;
-            alertDiv.textContent = message;
-            container.appendChild(alertDiv);
-            setTimeout(() => alertDiv.remove(), 5000);
-        }
-
-        // ========== User Management ==========
-
-        const createUserForm = document.getElementById('createUserForm');
-
-        createUserForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const submitBtn = e.target.querySelector('button[type="submit"]');
-            submitBtn.disabled = true;
-
-            try {
-                const userData = {
-                    username: document.getElementById('newUsername').value.trim(),
-                    display_name: document.getElementById('newDisplayName').value.trim(),
-                    pin: document.getElementById('newPin').value,
-                    role: document.getElementById('newRole').value
-                };
-
-                await createUser(userData);
-                showUserAlert(`User '${userData.display_name}' created successfully`, 'success');
-                createUserForm.reset();
-                loadUsers();
-            } catch (error) {
-                showUserAlert(error.message, 'error');
-            } finally {
-                submitBtn.disabled = false;
-            }
+            if (created) { U.toast(created.display_name + ' can now sign in', { type: 'success' }); loadUsers(); }
         });
 
         async function loadUsers() {
-            const content = document.getElementById('usersListContent');
+            var el = document.getElementById('usersTable');
             try {
-                const users = await getUsers();
-                if (users.length === 0) {
-                    content.innerHTML = '<p class="text-center">No users found.</p>';
-                    return;
-                }
-
-                content.innerHTML = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Username</th>
-                                <th>Display Name</th>
-                                <th>Role</th>
-                                <th>Status</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${users.map(user => `
-                                <tr data-user-id="${user.id}" style="${!user.active ? 'opacity: 0.5;' : ''}">
-                                    <td><strong>${user.username}</strong></td>
-                                    <td>${user.display_name}</td>
-                                    <td>
-                                        <select class="form-select user-role-select" data-user-id="${user.id}" style="padding: 0.5rem;" ${!user.active ? 'disabled' : ''}>
-                                            <option value="user" ${user.role === 'user' ? 'selected' : ''}>User</option>
-                                            <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option>
-                                        </select>
-                                    </td>
-                                    <td>
-                                        <span class="badge ${user.active ? 'badge-active' : 'badge-low'}">
-                                            ${user.active ? 'Active' : 'Inactive'}
-                                        </span>
-                                    </td>
-                                    <td style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                                        <button class="btn btn-primary reset-pin-btn" data-user-id="${user.id}" data-username="${user.username}" style="padding: 0.5rem 1rem; min-height: auto;" ${!user.active ? 'disabled' : ''}>
-                                            Reset PIN
-                                        </button>
-                                        ${user.active ?
-                                            `<button class="btn btn-danger deactivate-btn" data-user-id="${user.id}" data-username="${user.username}" style="padding: 0.5rem 1rem; min-height: auto;">
-                                                Deactivate
-                                            </button>` :
-                                            `<button class="btn btn-success reactivate-btn" data-user-id="${user.id}" data-username="${user.username}" style="padding: 0.5rem 1rem; min-height: auto;">
-                                                Reactivate
-                                            </button>`
-                                        }
-                                    </td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                `;
-
-                // Role change handlers
-                document.querySelectorAll('.user-role-select').forEach(select => {
-                    select.addEventListener('change', async (e) => {
-                        const userId = parseInt(e.target.dataset.userId);
-                        e.target.disabled = true;
-                        try {
-                            await updateUser(userId, { role: e.target.value });
-                            e.target.style.backgroundColor = '#dcfce7';
-                            setTimeout(() => { e.target.style.backgroundColor = ''; }, 1000);
-                            showUserAlert('Role updated', 'success');
-                        } catch (error) {
-                            showUserAlert(error.message, 'error');
-                            loadUsers(); // Reload to reset
-                        } finally {
-                            e.target.disabled = false;
-                        }
-                    });
+                users = await API.users();
+                var me = Auth.user() || {};
+                U.sortableTable(el, [
+                    { key: 'display_name', label: 'Name', render: function (u) {
+                        return '<strong>' + esc(u.display_name) + '</strong>' + (u.username === me.username ? ' <span class="badge">You</span>' : '') +
+                            '<div class="muted" style="font-size:0.88rem">@' + esc(u.username) + '</div>';
+                    } },
+                    { key: 'role', label: 'Role', render: function (u) {
+                        return '<select class="select select-sm" data-role="' + u.id + '" style="width:auto"' + (u.active ? '' : ' disabled') + '>' +
+                            '<option value="user"' + (u.role === 'user' ? ' selected' : '') + '>User</option><option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>Admin</option></select>';
+                    } },
+                    { key: 'active', label: 'Status', render: function (u) {
+                        return u.active ? '<span class="badge st-active"><span class="dot"></span>Active</span>' : '<span class="badge">Inactive</span>';
+                    } },
+                    { key: 'created_at', label: 'Added', render: function (u) { return '<span class="nowrap">' + U.formatDate(u.created_at) + '</span>'; } },
+                    { key: null, label: '', className: 'text-right', render: function (u) {
+                        return '<div class="row" style="justify-content:flex-end;gap:0.35rem;flex-wrap:nowrap">' +
+                            (u.active ? '<button type="button" class="btn btn-sm" data-pin="' + u.id + '">Reset PIN</button>' : '') +
+                            (u.username === me.username ? '' : u.active
+                                ? '<button type="button" class="btn btn-sm btn-ghost" data-deactivate="' + u.id + '">Deactivate</button>'
+                                : '<button type="button" class="btn btn-sm" data-reactivate="' + u.id + '">Reactivate</button>') + '</div>';
+                    } }
+                ], {
+                    rows: users, sortKey: 'display_name', ascending: true,
+                    rowAttrs: function (u) { return u.active ? '' : 'style="opacity:0.6"'; },
+                    onRender: bindUserRows
                 });
-
-                // Reset PIN handlers
-                document.querySelectorAll('.reset-pin-btn').forEach(btn => {
-                    btn.addEventListener('click', async () => {
-                        const userId = parseInt(btn.dataset.userId);
-                        const username = btn.dataset.username;
-                        const newPin = prompt(`Enter new PIN for ${username} (min 4 characters):`);
-                        if (!newPin) return;
-                        if (newPin.length < 4) {
-                            showUserAlert('PIN must be at least 4 characters', 'error');
-                            return;
-                        }
-                        try {
-                            await updateUser(userId, { pin: newPin });
-                            showUserAlert(`PIN reset for ${username}`, 'success');
-                        } catch (error) {
-                            showUserAlert(error.message, 'error');
-                        }
-                    });
-                });
-
-                // Deactivate handlers
-                document.querySelectorAll('.deactivate-btn').forEach(btn => {
-                    btn.addEventListener('click', async () => {
-                        const userId = parseInt(btn.dataset.userId);
-                        const username = btn.dataset.username;
-                        if (!confirm(`Deactivate user '${username}'? They will be logged out.`)) return;
-                        try {
-                            await deleteUser(userId);
-                            showUserAlert(`User '${username}' deactivated`, 'success');
-                            loadUsers();
-                        } catch (error) {
-                            showUserAlert(error.message, 'error');
-                        }
-                    });
-                });
-
-                // Reactivate handlers
-                document.querySelectorAll('.reactivate-btn').forEach(btn => {
-                    btn.addEventListener('click', async () => {
-                        const userId = parseInt(btn.dataset.userId);
-                        const username = btn.dataset.username;
-                        try {
-                            await updateUser(userId, { active: true });
-                            showUserAlert(`User '${username}' reactivated`, 'success');
-                            loadUsers();
-                        } catch (error) {
-                            showUserAlert(error.message, 'error');
-                        }
-                    });
-                });
-
-            } catch (error) {
-                content.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            } catch (err) {
+                el.innerHTML = U.inlineAlert(err.message, 'error');
             }
         }
 
-        function showUserAlert(message, type) {
-            showAlertInContainer('userAlerts', message, type);
-        }
+        function userById(id) { return users.filter(function (u) { return u.id === Number(id); })[0]; }
 
-        // ========== Tab Switching ==========
-
-        document.querySelectorAll('.admin-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
-                tab.classList.add('active');
-                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
-                if (tab.dataset.tab === 'top5') {
-                    loadTop5();
-                }
-            });
-        });
-
-        // ========== Top 5 Tab ==========
-
-        let currentTop5 = [];
-        let allJobsForSwap = [];
-        let swappingIndex = null;
-
-        document.getElementById('refreshTop5Btn').addEventListener('click', loadTop5);
-        document.getElementById('cancelSwapBtn').addEventListener('click', () => {
-            document.getElementById('swapJobCard').style.display = 'none';
-            swappingIndex = null;
-        });
-
-        async function loadTop5() {
-            const loading = document.getElementById('top5Loading');
-            const content = document.getElementById('top5Content');
-            loading.classList.remove('hidden');
-
-            try {
-                const data = await getTop5();
-                currentTop5 = data.top5.slice(0, 5);
-                allJobsForSwap = data.all_jobs;
-                renderTop5(currentTop5);
-                loadAuditLog();
-                loadEscalationAnalytics();
-            } catch (error) {
-                showAlertInContainer('top5Alerts', error.message, 'error');
-            } finally {
-                loading.classList.add('hidden');
-            }
-        }
-
-        let dragSrcIndex = null;
-
-        function renderTop5(jobs) {
-            const content = document.getElementById('top5Content');
-            const POSITION_PRIORITIES = ['top', 'urgent', 'high', 'medium', 'low'];
-            if (jobs.length === 0) {
-                content.innerHTML = '<p class="text-center">No jobs found. Add jobs to get started.</p>';
-                return;
-            }
-
-            const html = `
-                <table class="table" id="top5Table">
-                    <thead>
-                        <tr>
-                            <th style="width: 40px;"></th>
-                            <th style="width: 50px;">#</th>
-                            <th>S-Number</th>
-                            <th>Title</th>
-                            <th>Priority</th>
-                            <th>Score</th>
-                            <th>In Sharpen</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${jobs.map((job, i) => {
-                            const posPriority = POSITION_PRIORITIES[i] || 'low';
-                            return `
-                            <tr data-job-id="${job.job_id}" data-index="${i}" draggable="true" class="top5-row">
-                                <td class="drag-handle" style="cursor: grab; text-align: center; color: var(--text-light, #888); user-select: none;">&#9776;</td>
-                                <td><strong>${i + 1}</strong></td>
-                                <td><strong>S${job.s_number}</strong></td>
-                                <td>${job.title || '-'}</td>
-                                <td><span class="badge ${priorityBadgeClass(posPriority)}" style="font-size:0.8rem; padding:0.3rem 0.6rem;">${posPriority.charAt(0).toUpperCase() + posPriority.slice(1)}</span></td>
-                                <td class="text-center">${job.priority_score}</td>
-                                <td class="text-center">${job.sharpen_count}</td>
-                                <td style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                                    <a href="/static/job-detail.html?id=${job.job_id}" class="btn btn-primary" style="padding:0.5rem 1rem; min-height:auto;">View</a>
-                                    <button class="btn btn-warning swap-btn" data-index="${i}" style="padding:0.5rem 1rem; min-height:auto;">Swap</button>
-                                </td>
-                            </tr>`;
-                        }).join('')}
-                    </tbody>
-                </table>
-                <p style="margin-top: 0.75rem; font-size: 0.85rem; color: var(--text-light, #888);">Drag rows to reorder. Priority is set automatically by position.</p>
-            `;
-
-            content.innerHTML = html;
-
-            // Drag-and-drop handlers
-            document.querySelectorAll('.top5-row').forEach(row => {
-                row.addEventListener('dragstart', (e) => {
-                    dragSrcIndex = parseInt(row.dataset.index);
-                    row.style.opacity = '0.4';
-                    e.dataTransfer.effectAllowed = 'move';
-                });
-                row.addEventListener('dragend', () => {
-                    row.style.opacity = '1';
-                    document.querySelectorAll('.top5-row').forEach(r => r.classList.remove('drag-over'));
-                });
-                row.addEventListener('dragover', (e) => {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'move';
-                    row.classList.add('drag-over');
-                });
-                row.addEventListener('dragleave', () => {
-                    row.classList.remove('drag-over');
-                });
-                row.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    const dropIndex = parseInt(row.dataset.index);
-                    if (dragSrcIndex !== null && dragSrcIndex !== dropIndex) {
-                        const moved = currentTop5.splice(dragSrcIndex, 1)[0];
-                        currentTop5.splice(dropIndex, 0, moved);
-                        renderTop5(currentTop5);
-                        saveTop5Order();
+        function bindUserRows(root) {
+            root.querySelectorAll('[data-role]').forEach(function (sel) {
+                sel.addEventListener('change', async function () {
+                    var u = userById(sel.dataset.role);
+                    try {
+                        await API.updateUser(u.id, { role: sel.value });
+                        u.role = sel.value;
+                        flashRow(sel.closest('tr'));
+                    } catch (err) {
+                        sel.value = u.role;
+                        U.toast(err.message, { type: 'error' });
                     }
                 });
             });
-
-            // Swap button handlers
-            document.querySelectorAll('.swap-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    swappingIndex = parseInt(btn.dataset.index);
-                    showSwapPanel();
+            root.querySelectorAll('[data-pin]').forEach(function (b) {
+                b.addEventListener('click', async function () {
+                    var u = userById(b.dataset.pin);
+                    var ok = await U.openDialog({
+                        title: 'Reset PIN for ' + u.display_name, confirmLabel: 'Set PIN', body: pinFields(),
+                        onOpen: function (d) { d.querySelector('#fPin').focus(); },
+                        onConfirm: function (d) { return API.updateUser(u.id, { pin: readPin(d) }); }
+                    });
+                    if (ok) U.toast('PIN updated for ' + u.display_name, { type: 'success' });
+                });
+            });
+            root.querySelectorAll('[data-deactivate]').forEach(function (b) {
+                b.addEventListener('click', async function () {
+                    var u = userById(b.dataset.deactivate);
+                    if (!await U.confirmDialog('Deactivate ' + u.display_name + '?', 'They will be signed out and unable to sign in until reactivated.', { danger: true, confirmLabel: 'Deactivate' })) return;
+                    try { await API.deactivateUser(u.id); U.toast(u.display_name + ' deactivated', { type: 'success' }); loadUsers(); }
+                    catch (err) { U.toast(err.message, { type: 'error' }); }
+                });
+            });
+            root.querySelectorAll('[data-reactivate]').forEach(function (b) {
+                b.addEventListener('click', async function () {
+                    var u = userById(b.dataset.reactivate);
+                    try { await API.updateUser(u.id, { active: true }); U.toast(u.display_name + ' reactivated', { type: 'success' }); loadUsers(); }
+                    catch (err) { U.toast(err.message, { type: 'error' }); }
                 });
             });
         }
 
-        async function saveTop5Order() {
-            try {
-                await reorderTop5(currentTop5.map(j => j.job_id));
-                loadAuditLog();
-            } catch (error) {
-                showAlertInContainer('top5Alerts', 'Failed to save order: ' + error.message, 'error');
-            }
-        }
+        // ========== Settings & data ==========
 
-        // Swap panel
-        function showSwapPanel() {
-            const card = document.getElementById('swapJobCard');
-            card.style.display = '';
-            document.getElementById('swapSearchInput').value = '';
-            renderSwapCandidates('');
-            card.scrollIntoView({ behavior: 'smooth' });
-        }
-
-        function renderSwapCandidates(query) {
-            const top5Ids = currentTop5.map(j => j.job_id);
-            let candidates = allJobsForSwap.filter(j => !top5Ids.includes(j.id));
-
-            if (query && query.length >= 1) {
-                const q = query.toLowerCase();
-                candidates = candidates.filter(j =>
-                    j.s_number.toString().toLowerCase().includes(q) ||
-                    (j.title && j.title.toLowerCase().includes(q))
-                );
-            }
-
-            const container = document.getElementById('swapCandidates');
-            if (candidates.length === 0) {
-                container.innerHTML = '<p class="text-center">No matching jobs found.</p>';
-                return;
-            }
-
-            container.innerHTML = candidates.slice(0, 20).map(j => `
-                <div class="swap-candidate" data-job-id="${j.id}" style="padding: 0.75rem 1rem; border: 2px solid var(--border-color, #ddd); border-radius: 0.5rem; margin-bottom: 0.5rem; cursor: pointer; transition: all 0.2s; display: flex; justify-content: space-between; align-items: center;">
-                    <span><strong>S${j.s_number}</strong> - ${j.title || '(no title)'}</span>
-                    <span style="font-size: 0.85rem; color: var(--text-light);">${(j.priority_level || 'low').charAt(0).toUpperCase() + (j.priority_level || 'low').slice(1)}</span>
-                </div>
-            `).join('');
-
-            container.querySelectorAll('.swap-candidate').forEach(el => {
-                el.addEventListener('click', () => swapJobIn(parseInt(el.dataset.jobId)));
-                el.addEventListener('mouseenter', () => { el.style.borderColor = 'var(--primary-color, #3b82f6)'; el.style.background = '#f0f9ff'; });
-                el.addEventListener('mouseleave', () => { el.style.borderColor = 'var(--border-color, #ddd)'; el.style.background = ''; });
+        var EXPORTS = [
+            ['jobs', 'Jobs'], ['cam-items', 'Tools'], ['moves', 'Move history'],
+            ['tool-lifespans', 'Tool lifespans'], ['tool-summary', 'Tool lifetime summary'], ['priority-changes', 'Priority changes']
+        ];
+        document.getElementById('exports').innerHTML = EXPORTS.map(function (e) {
+            return '<button type="button" class="btn btn-lg" data-export="' + e[0] + '">' + U.icon('download') + e[1] + '</button>';
+        }).join('') + '<button type="button" class="btn btn-lg" id="dbExport">' + U.icon('database') + 'Full database backup</button>';
+        document.querySelectorAll('[data-export]').forEach(function (b) {
+            b.addEventListener('click', async function () {
+                U.setLoading(b, true);
+                try { await API.exportCsv(b.dataset.export); } catch (err) { U.toast(err.message, { type: 'error' }); }
+                U.setLoading(b, false);
             });
-        }
-
-        function swapJobIn(newJobId) {
-            if (swappingIndex === null) return;
-
-            const newJob = allJobsForSwap.find(j => j.id === newJobId);
-            if (!newJob) return;
-
-            // Create a hot-list-style entry for the swapped-in job
-            const placeholder = {
-                job_id: newJob.id,
-                s_number: newJob.s_number,
-                title: newJob.title,
-                priority_level: newJob.priority_level || 'low',
-                priority_score: 0,
-                sharpen_count: 0
-            };
-
-            currentTop5[swappingIndex] = placeholder;
-            renderTop5(currentTop5);
-            saveTop5Order();
-
-            // Hide swap panel
-            document.getElementById('swapJobCard').style.display = 'none';
-            swappingIndex = null;
-        }
-
-        // Swap search with debounce
-        let swapSearchTimeout = null;
-        document.getElementById('swapSearchInput').addEventListener('input', (e) => {
-            clearTimeout(swapSearchTimeout);
-            swapSearchTimeout = setTimeout(() => {
-                renderSwapCandidates(e.target.value.trim());
-            }, 300);
+        });
+        document.getElementById('dbExport').addEventListener('click', async function () {
+            var b = this;
+            U.setLoading(b, true);
+            try { await API.exportDatabase(); } catch (err) { U.toast(err.message, { type: 'error' }); }
+            U.setLoading(b, false);
         });
 
-        // ========== Audit Log ==========
-
-        async function loadAuditLog() {
-            const content = document.getElementById('auditContent');
+        async function loadSettings() {
             try {
-                const data = await getPriorityChanges({ limit: 20 });
-                if (data.items.length === 0) {
-                    content.innerHTML = '<p class="text-center">No priority changes recorded yet.</p>';
-                    return;
-                }
-
-                content.innerHTML = `
-                    <div class="table-responsive" style="overflow-x: auto;">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>Time</th>
-                                    <th>Job</th>
-                                    <th>Changed By</th>
-                                    <th>From</th>
-                                    <th>To</th>
-                                    <th>Reason</th>
-                                    <th>Source</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${data.items.map(c => `
-                                    <tr>
-                                        <td style="white-space: nowrap;">${formatDateTime(c.changed_at)}</td>
-                                        <td><strong>S${c.s_number}</strong></td>
-                                        <td>${c.changed_by_username}</td>
-                                        <td><span class="badge ${priorityBadgeClass(c.old_priority)}" style="font-size:0.75rem; padding:0.25rem 0.5rem;">${c.old_priority}</span></td>
-                                        <td><span class="badge ${priorityBadgeClass(c.new_priority)}" style="font-size:0.75rem; padding:0.25rem 0.5rem;">${c.new_priority}</span></td>
-                                        <td>${c.reason}</td>
-                                        <td>${c.source === 'top5' ? 'Top 5' : 'All Jobs'}</td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
-            } catch (error) {
-                content.innerHTML = '<div class="alert alert-error">' + error.message + '</div>';
+                var cfg = await API.config();
+                document.getElementById('autoBump').checked = cfg.auto_bump_enabled;
+                document.getElementById('defaultLife').value = cfg.default_material_life;
+            } catch (err) {
+                U.toast(err.message, { type: 'error' });
             }
         }
 
-        function priorityBadgeClass(name) {
-            const map = { low: 'badge-low', medium: 'badge-medium', high: 'badge-high', urgent: 'badge-urgent', top: 'badge-urgent' };
-            return map[name] || 'badge-low';
-        }
-
-        // ========== Escalation Analytics ==========
-
-        document.getElementById('analyticsPeriod').addEventListener('change', loadEscalationAnalytics);
-
-        async function loadEscalationAnalytics() {
-            const content = document.getElementById('analyticsContent');
-            const days = parseInt(document.getElementById('analyticsPeriod').value);
-
+        document.getElementById('configForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+            var btn = e.target.querySelector('[type="submit"]');
+            var life = parseFloat(document.getElementById('defaultLife').value);
+            if (isNaN(life) || life < 0.001 || life > 2) { U.toast('Default material life must be between 0.001 and 2.000 inches', { type: 'warning' }); return; }
+            U.setLoading(btn, true);
             try {
-                const data = await getPriorityAnalytics(days);
-                const viaTop5 = (data.by_source || []).find(s => s.source === 'top5');
-
-                let html = '<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1rem 0;">';
-                html += '<div style="background: #f0f9ff; padding: 1rem; border-radius: 0.5rem; text-align: center;">';
-                html += '<div style="font-size: 2rem; font-weight: 700;">' + data.total_changes + '</div>';
-                html += '<div style="font-size: 0.85rem; color: var(--text-light);">Total Changes (' + days + 'd)</div></div>';
-                html += '<div style="background: #f0fdf4; padding: 1rem; border-radius: 0.5rem; text-align: center;">';
-                html += '<div style="font-size: 2rem; font-weight: 700;">' + data.most_changed_jobs.length + '</div>';
-                html += '<div style="font-size: 0.85rem; color: var(--text-light);">Jobs Changed</div></div>';
-                html += '<div style="background: #fefce8; padding: 1rem; border-radius: 0.5rem; text-align: center;">';
-                html += '<div style="font-size: 2rem; font-weight: 700;">' + (viaTop5 ? viaTop5.count : 0) + '</div>';
-                html += '<div style="font-size: 0.85rem; color: var(--text-light);">Via Top 5</div></div>';
-                html += '</div>';
-
-                // Daily frequency bar chart
-                if (data.daily_counts.length > 0) {
-                    const maxCount = Math.max(...data.daily_counts.map(d => d.count));
-                    html += '<h3 style="margin: 1.5rem 0 1rem;">Daily Changes</h3>';
-                    data.daily_counts.forEach(d => {
-                        const pct = maxCount > 0 ? (d.count / maxCount * 100) : 0;
-                        html += '<div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.25rem;">';
-                        html += '<span style="min-width:80px; font-size:0.85rem; color:var(--text-light);">' + d.day + '</span>';
-                        html += '<div style="flex:1; background:#e2e8f0; border-radius:4px; height:20px;">';
-                        html += '<div style="width:' + pct + '%; background:var(--primary-color, #3b82f6); height:100%; border-radius:4px; min-width:' + (d.count > 0 ? '2px' : '0') + ';"></div>';
-                        html += '</div>';
-                        html += '<span style="min-width:30px; text-align:right; font-weight:600;">' + d.count + '</span>';
-                        html += '</div>';
-                    });
-                }
-
-                // Most escalated jobs (sortable)
-                if (data.most_changed_jobs.length > 0) {
-                    html += '<h3 style="margin: 1.5rem 0 1rem;">Most Escalated Jobs</h3>';
-                    html += '<table class="table" id="escalationTable"><thead><tr><th>Job</th><th>Title</th><th>Current</th>';
-                    html += '<th class="sortable-header" data-sort="change_count" style="cursor:pointer; user-select:none;">Total Changes <span class="sort-indicator"></span></th>';
-                    html += '<th class="sortable-header active-sort" data-sort="escalation_count" style="cursor:pointer; user-select:none;">Escalations <span class="sort-indicator">&#9660;</span></th>';
-                    html += '</tr></thead><tbody id="escalationBody">';
-                    data.most_changed_jobs.sort((a, b) => b.escalation_count - a.escalation_count || b.change_count - a.change_count);
-                    data.most_changed_jobs.forEach(j => {
-                        html += '<tr>';
-                        html += '<td><strong>S' + j.s_number + '</strong></td>';
-                        html += '<td>' + (j.title || '-') + '</td>';
-                        html += '<td><span class="badge ' + priorityBadgeClass(j.priority_level) + '" style="font-size:0.75rem; padding:0.25rem 0.5rem;">' + (j.priority_level || 'low') + '</span></td>';
-                        html += '<td class="text-center">' + j.change_count + '</td>';
-                        html += '<td class="text-center">' + j.escalation_count + '</td>';
-                        html += '</tr>';
-                    });
-                    html += '</tbody></table>';
-                    // Store data for client-side re-sorting
-                    window._escalationData = data.most_changed_jobs;
-                    window._escalationSortKey = 'escalation_count';
-                    window._escalationSortAsc = false;
-                }
-
-                // Transition matrix
-                if (data.transitions.length > 0) {
-                    html += '<h3 style="margin: 1.5rem 0 1rem;">Priority Transitions</h3>';
-                    html += '<table class="table"><thead><tr><th>From</th><th>To</th><th>Count</th></tr></thead><tbody>';
-                    data.transitions.forEach(t => {
-                        html += '<tr>';
-                        html += '<td><span class="badge ' + priorityBadgeClass(t.old_priority) + '" style="font-size:0.75rem; padding:0.25rem 0.5rem;">' + t.old_priority + '</span></td>';
-                        html += '<td><span class="badge ' + priorityBadgeClass(t.new_priority) + '" style="font-size:0.75rem; padding:0.25rem 0.5rem;">' + t.new_priority + '</span></td>';
-                        html += '<td>' + t.count + '</td>';
-                        html += '</tr>';
-                    });
-                    html += '</tbody></table>';
-                }
-
-                if (data.total_changes === 0) {
-                    html += '<p class="text-center" style="margin-top: 1rem;">No priority changes in this period.</p>';
-                }
-
-                content.innerHTML = html;
-
-                // Bind sortable header clicks
-                content.querySelectorAll('.sortable-header').forEach(th => {
-                    th.addEventListener('click', () => {
-                        const key = th.dataset.sort;
-                        if (window._escalationSortKey === key) {
-                            window._escalationSortAsc = !window._escalationSortAsc;
-                        } else {
-                            window._escalationSortKey = key;
-                            window._escalationSortAsc = false;
-                        }
-                        const dir = window._escalationSortAsc ? 1 : -1;
-                        window._escalationData.sort((a, b) => (a[key] - b[key]) * dir || (b.escalation_count - a.escalation_count));
-
-                        const tbody = document.getElementById('escalationBody');
-                        tbody.innerHTML = window._escalationData.map(j =>
-                            '<tr>' +
-                            '<td><strong>S' + j.s_number + '</strong></td>' +
-                            '<td>' + (j.title || '-') + '</td>' +
-                            '<td><span class="badge ' + priorityBadgeClass(j.priority_level) + '" style="font-size:0.75rem; padding:0.25rem 0.5rem;">' + (j.priority_level || 'low') + '</span></td>' +
-                            '<td class="text-center">' + j.change_count + '</td>' +
-                            '<td class="text-center">' + j.escalation_count + '</td>' +
-                            '</tr>'
-                        ).join('');
-
-                        // Update indicators
-                        content.querySelectorAll('.sortable-header').forEach(h => {
-                            const ind = h.querySelector('.sort-indicator');
-                            if (h.dataset.sort === key) {
-                                h.classList.add('active-sort');
-                                ind.innerHTML = window._escalationSortAsc ? '&#9650;' : '&#9660;';
-                            } else {
-                                h.classList.remove('active-sort');
-                                ind.innerHTML = '';
-                            }
-                        });
-                    });
-                });
-            } catch (error) {
-                content.innerHTML = '<div class="alert alert-error">' + error.message + '</div>';
+                await API.updateConfig({ auto_bump_enabled: document.getElementById('autoBump').checked, default_material_life: life });
+                U.toast('Settings saved', { type: 'success' });
+            } catch (err) {
+                U.toast(err.message, { type: 'error' });
+            } finally {
+                U.setLoading(btn, false);
             }
-        }
+        });
 
-        // Initialize - load data if already logged in
-        function initAdminPage() {
-            loadConfig();
-            loadJobsForBulk();
-            loadJobsForEdit();
-            loadAllJobs();
-            loadUsers();
-        }
+        var importBtn = document.getElementById('importBtn');
+        importBtn.innerHTML = U.icon('upload') + 'Restore from backup';
+        importBtn.addEventListener('click', async function () {
+            var file = document.getElementById('dbFile').files[0];
+            if (!file) { U.toast('Choose a backup file first', { type: 'warning' }); return; }
+            if (!/\.(db|sqlite|sqlite3)$/i.test(file.name)) { U.toast('Choose a .db, .sqlite or .sqlite3 file', { type: 'warning' }); return; }
+            var result = await U.openDialog({
+                title: 'Replace all data?', danger: true, confirmLabel: 'Replace all data',
+                text: 'Every job, tool, move and user will be replaced by the contents of ' + file.name + '. Type REPLACE to confirm.',
+                body: '<input id="fConfirm" class="input" autocomplete="off" autocapitalize="characters" autofocus placeholder="REPLACE">',
+                onConfirm: function (d) {
+                    if (d.querySelector('#fConfirm').value.trim() !== 'REPLACE') throw new Error('Type REPLACE to confirm');
+                    return API.importDatabase(file);
+                }
+            });
+            if (!result) return;
+            U.toast('Database restored', { type: 'success', detail: result.jobs_count + ' jobs · ' + result.cam_items_count + ' tools · ' + result.moves_count + ' moves. Reloading…' });
+            setTimeout(function () { location.reload(); }, 2000);
+        });
 
-        // Load immediately (works if already logged in)
-        initAdminPage();
+        // ========== Init ==========
 
-        // Re-load after login (if user had to log in first)
-        window.addEventListener('userLoggedIn', initAdminPage);
+        Auth.onReady(function () {
+            loaded = {};
+            showTab(location.hash.slice(1), true);
+        });
+    })();
     </script>
 </body>
 </html>

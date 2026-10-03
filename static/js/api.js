@@ -1,544 +1,189 @@
-// API utility functions for CAM Tracking Kiosk
+// API client for the CAM Tracking Kiosk.
 
-const API_BASE = '/api';
+(function (global) {
+    'use strict';
 
-// ========== Auth Token Management ==========
+    var API_BASE = '/api';
+    var TOKEN_KEY = 'cam_auth_token';
+    var USER_KEY = 'cam_current_user';
 
-function getAuthToken() {
-    return localStorage.getItem('cam_auth_token');
-}
+    // ========== Session storage ==========
 
-function setAuthToken(token) {
-    localStorage.setItem('cam_auth_token', token);
-}
+    function storageGet(key) {
+        try { return localStorage.getItem(key); } catch (e) { return null; }
+    }
+    function storageSet(key, value) {
+        try { localStorage.setItem(key, value); } catch (e) { /* private mode */ }
+    }
+    function storageRemove(key) {
+        try { localStorage.removeItem(key); } catch (e) { /* private mode */ }
+    }
 
-function clearAuthToken() {
-    localStorage.removeItem('cam_auth_token');
-    localStorage.removeItem('cam_current_user');
-}
+    var Session = {
+        token: function () { return storageGet(TOKEN_KEY); },
+        user: function () {
+            try { return JSON.parse(storageGet(USER_KEY)); } catch (e) { return null; }
+        },
+        save: function (token, user) {
+            if (token) storageSet(TOKEN_KEY, token);
+            if (user) storageSet(USER_KEY, JSON.stringify(user));
+        },
+        clear: function () { storageRemove(TOKEN_KEY); storageRemove(USER_KEY); },
+        isLoggedIn: function () { return !!storageGet(TOKEN_KEY); },
+        isAdmin: function () { var u = Session.user(); return !!u && u.role === 'admin'; }
+    };
 
-function getCurrentUser() {
-    const data = localStorage.getItem('cam_current_user');
-    return data ? JSON.parse(data) : null;
-}
+    // ========== Request core ==========
 
-function setCurrentUser(user) {
-    localStorage.setItem('cam_current_user', JSON.stringify(user));
-}
-
-function isLoggedIn() {
-    return !!getAuthToken();
-}
-
-function isAdmin() {
-    const user = getCurrentUser();
-    return user && user.role === 'admin';
-}
-
-// Generic fetch wrapper with error handling and auth
-async function apiCall(endpoint, options = {}) {
-    try {
-        const headers = {
-            'Content-Type': 'application/json',
-            ...options.headers
-        };
-
-        // Auto-inject auth token
-        const token = getAuthToken();
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const response = await fetch(`${API_BASE}${endpoint}`, {
-            ...options,
-            headers
-        });
-
-        // Handle auth errors - redirect to entry screen
-        if (response.status === 401) {
-            clearAuthToken();
-            window.location.href = '/static/index.html';
-            throw new Error('Session expired. Please log in again.');
-        }
-
-        if (response.status === 403) {
-            throw new Error('Admin access required for this action.');
-        }
-
-        if (!response.ok) {
-            let message = `API error: ${response.status}`;
-            try {
-                const error = await response.json();
-                message = error.detail || message;
-            } catch (e) {
-                // Response wasn't JSON (e.g. plain text 500 error)
-                try {
-                    const text = await response.text();
-                    if (text) message = text;
-                } catch (e2) { /* ignore */ }
+    async function errorMessage(response) {
+        try {
+            var body = await response.clone().json();
+            if (typeof body.detail === 'string') return body.detail;
+            if (Array.isArray(body.detail) && body.detail.length) {
+                // Pydantic validation errors
+                return body.detail.map(function (d) { return d.msg.replace(/^Value error, /, ''); }).join('; ');
             }
-            throw new Error(message);
+        } catch (e) {
+            try {
+                var text = await response.text();
+                if (text) return text;
+            } catch (e2) { /* ignore */ }
+        }
+        return 'Request failed (' + response.status + ')';
+    }
+
+    /**
+     * Call the API. Returns parsed JSON, or the raw Response for non-JSON bodies.
+     * options: fetch options plus `json` (body to serialize) and `raw` (skip parsing).
+     */
+    async function request(endpoint, options) {
+        options = options || {};
+        var headers = Object.assign({}, options.headers);
+        var token = Session.token();
+        if (token) headers.Authorization = 'Bearer ' + token;
+        var init = { method: options.method || 'GET', headers: headers };
+        if (options.json !== undefined) {
+            headers['Content-Type'] = 'application/json';
+            init.body = JSON.stringify(options.json);
+        } else if (options.body) {
+            init.body = options.body;
         }
 
-        // Handle non-JSON responses (like CSV downloads)
-        const contentType = response.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-            return await response.json();
+        var response;
+        try {
+            response = await fetch(API_BASE + endpoint, init);
+        } catch (e) {
+            throw new Error('Cannot reach the server. Check that it is running.');
         }
 
+        if (response.status === 401 && token) {
+            Session.clear();
+            global.dispatchEvent(new CustomEvent('sessionExpired'));
+            throw new Error('Your session has expired. Please log in again.');
+        }
+        if (response.status === 403) throw new Error('Admin access required for this action.');
+        if (!response.ok) throw new Error(await errorMessage(response));
+
+        var type = response.headers.get('content-type') || '';
+        if (!options.raw && type.indexOf('application/json') >= 0) return response.json();
         return response;
-    } catch (error) {
-        console.error('API call failed:', error);
-        throw error;
-    }
-}
-
-// ========== Auth API ==========
-
-async function authLogin(pin) {
-    // Login doesn't need auth token, call fetch directly
-    const response = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin })
-    });
-
-    if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Login failed');
     }
 
-    const data = await response.json();
-    setAuthToken(data.token);
-    setCurrentUser(data.user);
-    return data;
-}
-
-async function authLogout() {
-    try {
-        await apiCall('/auth/logout', { method: 'POST' });
-    } catch (e) {
-        // Ignore errors on logout
-    }
-    clearAuthToken();
-}
-
-async function authGetMe() {
-    return apiCall('/auth/me');
-}
-
-// ========== Users API (admin) ==========
-
-async function getUsers() {
-    return apiCall('/users');
-}
-
-async function createUser(userData) {
-    return apiCall('/users', {
-        method: 'POST',
-        body: JSON.stringify(userData)
-    });
-}
-
-async function updateUser(userId, updates) {
-    return apiCall(`/users/${userId}`, {
-        method: 'PATCH',
-        body: JSON.stringify(updates)
-    });
-}
-
-async function deleteUser(userId) {
-    return apiCall(`/users/${userId}`, {
-        method: 'DELETE'
-    });
-}
-
-// Jobs
-async function getJobs() {
-    const response = await apiCall('/jobs');
-    return response.items || response;
-}
-
-async function getJob(jobId) {
-    return apiCall(`/jobs/${jobId}`);
-}
-
-async function createJob(jobData) {
-    return apiCall('/jobs', {
-        method: 'POST',
-        body: JSON.stringify(jobData)
-    });
-}
-
-async function updateJob(jobId, updates) {
-    return apiCall(`/jobs/${jobId}`, {
-        method: 'PATCH',
-        body: JSON.stringify(updates)
-    });
-}
-
-async function deleteJob(jobId) {
-    return apiCall(`/jobs/${jobId}`, {
-        method: 'DELETE'
-    });
-}
-
-// CAM Items
-async function getCamItems(filters = {}) {
-    const params = new URLSearchParams(filters);
-    return apiCall(`/cam-items?${params}`);
-}
-
-async function getCamItem(camItemId) {
-    return apiCall(`/cam-items/${camItemId}`);
-}
-
-async function createCamItem(itemData) {
-    return apiCall('/cam-items', {
-        method: 'POST',
-        body: JSON.stringify(itemData)
-    });
-}
-
-async function updateCamItem(camItemId, updates) {
-    return apiCall(`/cam-items/${camItemId}`, {
-        method: 'PATCH',
-        body: JSON.stringify(updates)
-    });
-}
-
-async function createCamItemsBulk(bulkData) {
-    return apiCall('/cam-items/bulk', {
-        method: 'POST',
-        body: JSON.stringify(bulkData)
-    });
-}
-
-// Entry Resolution
-async function resolveEntry(entry) {
-    return apiCall('/resolve-entry', {
-        method: 'POST',
-        body: JSON.stringify({ entry })
-    });
-}
-
-// Moves
-async function moveCam(moveData) {
-    return apiCall('/moves', {
-        method: 'POST',
-        body: JSON.stringify(moveData)
-    });
-}
-
-async function undoMove(camItemId) {
-    return apiCall(`/moves/undo/${camItemId}`, {
-        method: 'POST'
-    });
-}
-
-async function batchMoveCams(moves, autoBump = null) {
-    return apiCall('/moves/batch', {
-        method: 'POST',
-        body: JSON.stringify({ moves, auto_bump: autoBump })
-    });
-}
-
-async function getMoves(filters = {}) {
-    const params = new URLSearchParams(filters);
-    return apiCall(`/moves?${params}`);
-}
-
-// Hot List
-async function getHotList() {
-    return apiCall('/hot-list');
-}
-
-// Top 5 Priority Management
-async function getTop5() {
-    return apiCall('/top5');
-}
-
-async function setTop5Priorities(jobs) {
-    return apiCall('/top5/set-priority', {
-        method: 'POST',
-        body: JSON.stringify({ jobs })
-    });
-}
-
-async function reorderTop5(jobIds) {
-    return apiCall('/top5/reorder', {
-        method: 'POST',
-        body: JSON.stringify({ job_ids: jobIds })
-    });
-}
-
-async function getPriorityChanges(filters = {}) {
-    const params = new URLSearchParams(filters);
-    return apiCall(`/priority-changes?${params}`);
-}
-
-async function getPriorityAnalytics(days = 30) {
-    return apiCall(`/priority-changes/analytics?days=${days}`);
-}
-
-// Search
-async function search(query) {
-    const params = new URLSearchParams({ q: query });
-    return apiCall(`/search?${params}`);
-}
-
-// Analytics
-async function getStationCounts() {
-    return apiCall('/analytics/station-counts');
-}
-
-async function getRecentMoves(days = 7) {
-    return apiCall(`/analytics/moves-recent?days=${days}`);
-}
-
-async function getDwellTimes() {
-    return apiCall('/analytics/dwell-times');
-}
-
-async function getCycleCounts(limit = 20) {
-    return apiCall(`/analytics/cycle-counts?limit=${limit}`);
-}
-
-async function getSharpenBacklog() {
-    return apiCall('/analytics/sharpen-backlog');
-}
-
-async function getRefillForecast(limit = 50) {
-    return apiCall(`/analytics/refill-forecast?limit=${limit}`);
-}
-
-async function getStationTransitions(days = 30) {
-    return apiCall(`/analytics/station-transitions?days=${days}`);
-}
-
-async function getOperatorActivity(days = 30) {
-    return apiCall(`/analytics/operator-activity?days=${days}`);
-}
-
-async function getLifespanStats() {
-    return apiCall('/analytics/lifespan-stats');
-}
-
-async function getMaterialTrends(days = 30) {
-    return apiCall(`/analytics/material-trends?days=${days}`);
-}
-
-// Lifespan
-async function getCamLifespan(camItemId) {
-    return apiCall(`/cam-items/${camItemId}/lifespan`);
-}
-
-// Configuration
-async function getConfig() {
-    return apiCall('/config');
-}
-
-async function updateConfig(configData) {
-    return apiCall('/config', {
-        method: 'PATCH',
-        body: JSON.stringify(configData)
-    });
-}
-
-// Exports — use fetch with auth token and trigger blob download
-async function _downloadFile(endpoint, filename) {
-    const response = await apiCall(endpoint);
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-
-async function exportJobsCSV() {
-    await _downloadFile('/export/jobs/csv', 'jobs.csv');
-}
-
-async function exportCamItemsCSV() {
-    await _downloadFile('/export/cam-items/csv', 'cam_items.csv');
-}
-
-async function exportMovesCSV() {
-    await _downloadFile('/export/moves/csv', 'moves.csv');
-}
-
-async function exportToolLifespansCSV() {
-    await _downloadFile('/export/tool-lifespans/csv', 'tool_lifespans.csv');
-}
-
-async function exportToolSummaryCSV() {
-    await _downloadFile('/export/tool-summary/csv', 'tool_summary.csv');
-}
-
-async function exportPriorityChangesCSV() {
-    await _downloadFile('/export/priority-changes/csv', 'priority_changes.csv');
-}
-
-async function exportDatabase() {
-    await _downloadFile('/export/database', 'cam_tracking_backup.db');
-}
-
-async function importDatabase() {
-    const fileInput = document.getElementById('dbFileInput');
-    const file = fileInput.files[0];
-
-    if (!file) {
-        showAlertInContainer('importAlerts', 'Please select a database file to import', 'error');
-        return;
-    }
-
-    if (!file.name.match(/\.(db|sqlite|sqlite3)$/i)) {
-        showAlertInContainer('importAlerts', 'Please select a valid SQLite database file (.db, .sqlite, or .sqlite3)', 'error');
-        return;
-    }
-
-    if (!confirm('⚠️ WARNING: This will PERMANENTLY REPLACE all current data!\n\nAre you absolutely sure you want to continue?')) {
-        return;
-    }
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-        const headers = {};
-        const token = getAuthToken();
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const response = await fetch(`${API_BASE}/import/database`, {
-            method: 'POST',
-            headers,
-            body: formData
+    function qs(params) {
+        var clean = {};
+        Object.keys(params || {}).forEach(function (k) {
+            if (params[k] !== undefined && params[k] !== null && params[k] !== '') clean[k] = params[k];
         });
+        var s = new URLSearchParams(clean).toString();
+        return s ? '?' + s : '';
+    }
 
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Import failed');
+    async function download(endpoint, filename) {
+        var response = await request(endpoint, { raw: true });
+        var blob = await response.blob();
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+
+    // ========== Endpoints ==========
+
+    var API = {
+        request: request,
+        download: download,
+
+        // Auth
+        login: async function (pin) {
+            var data = await request('/auth/login', { method: 'POST', json: { pin: pin } });
+            Session.save(data.token, data.user);
+            return data;
+        },
+        logout: async function () {
+            try { await request('/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
+            Session.clear();
+        },
+        me: function () { return request('/auth/me'); },
+
+        // Users
+        users: function () { return request('/users'); },
+        createUser: function (data) { return request('/users', { method: 'POST', json: data }); },
+        updateUser: function (id, data) { return request('/users/' + id, { method: 'PATCH', json: data }); },
+        deactivateUser: function (id) { return request('/users/' + id, { method: 'DELETE' }); },
+
+        // Jobs
+        jobs: async function () {
+            var data = await request('/jobs?limit=500');
+            return data.items;
+        },
+        job: function (id) { return request('/jobs/' + id); },
+        jobToolStats: function (id) { return request('/jobs/' + id + '/tool-stats'); },
+        createJob: function (data) { return request('/jobs', { method: 'POST', json: data }); },
+        updateJob: function (id, data) { return request('/jobs/' + id, { method: 'PATCH', json: data }); },
+        deleteJob: function (id) { return request('/jobs/' + id, { method: 'DELETE' }); },
+
+        // Tools
+        camItem: function (id) { return request('/cam-items/' + id); },
+        updateCamItem: function (id, data) { return request('/cam-items/' + id, { method: 'PATCH', json: data }); },
+        createCamItemsBulk: function (data) { return request('/cam-items/bulk', { method: 'POST', json: data }); },
+        camLifespan: function (id) { return request('/cam-items/' + id + '/lifespan'); },
+
+        // Moves
+        resolveEntry: function (entry) { return request('/resolve-entry', { method: 'POST', json: { entry: entry } }); },
+        moveCam: function (data) { return request('/moves', { method: 'POST', json: data }); },
+        moveSet: function (data) { return request('/moves/set', { method: 'POST', json: data }); },
+        undoMove: function (camItemId) { return request('/moves/undo/' + camItemId, { method: 'POST' }); },
+        moves: function (params) { return request('/moves' + qs(params)); },
+
+        // Priority
+        hotList: function () { return request('/hot-list'); },
+        top5: function () { return request('/top5'); },
+        reorderTop5: function (jobIds) { return request('/top5/reorder', { method: 'POST', json: { job_ids: jobIds } }); },
+        priorityChanges: function (params) { return request('/priority-changes' + qs(params)); },
+        priorityAnalytics: function (days) { return request('/priority-changes/analytics' + qs({ days: days })); },
+
+        // Search & analytics
+        search: function (q) { return request('/search' + qs({ q: q })); },
+        analytics: function (name, params) { return request('/analytics/' + name + qs(params)); },
+
+        // Config
+        config: function () { return request('/config'); },
+        updateConfig: function (data) { return request('/config', { method: 'PATCH', json: data }); },
+
+        // Data
+        exportCsv: function (name) { return download('/export/' + name + '/csv', name.replace(/-/g, '_') + '.csv'); },
+        exportDatabase: function () { return download('/export/database', 'cam_tracking_backup.db'); },
+        importDatabase: function (file) {
+            var form = new FormData();
+            form.append('file', file);
+            return request('/import/database', { method: 'POST', body: form });
         }
-
-        const result = await response.json();
-        showAlertInContainer('importAlerts', `Database imported successfully! Jobs: ${result.jobs_count}, CAMs: ${result.cam_items_count}, Moves: ${result.moves_count}`, 'success');
-
-        // Clear file input
-        fileInput.value = '';
-
-        // Reload the page after a short delay to refresh all data
-        setTimeout(() => {
-            window.location.reload();
-        }, 2000);
-    } catch (error) {
-        showAlertInContainer('importAlerts', `Import failed: ${error.message}`, 'error');
-    }
-}
-
-function showAlertInContainer(containerId, message, type) {
-    const container = document.getElementById(containerId);
-    if (!container) {
-        console.error(`Alert container '${containerId}' not found`);
-        return;
-    }
-    container.innerHTML = '';
-    const alertDiv = document.createElement('div');
-    alertDiv.className = `alert alert-${type}`;
-    alertDiv.textContent = message;
-    container.appendChild(alertDiv);
-    setTimeout(() => alertDiv.remove(), 5000);
-}
-
-// UI Helpers
-function showAlert(message, type = 'info') {
-    const alertDiv = document.createElement('div');
-    alertDiv.className = `alert alert-${type}`;
-    alertDiv.textContent = message;
-
-    const container = document.querySelector('.container');
-    if (container) {
-        container.insertBefore(alertDiv, container.firstChild);
-
-        // Auto-remove after 5 seconds
-        setTimeout(() => {
-            alertDiv.remove();
-        }, 5000);
-    }
-}
-
-function showError(message) {
-    showAlert(message, 'error');
-}
-
-function showSuccess(message) {
-    showAlert(message, 'success');
-}
-
-function formatDateTime(dateString) {
-    if (!dateString) return 'N/A';
-    const date = new Date(dateString);
-    return date.toLocaleString();
-}
-
-function formatDate(dateString) {
-    if (!dateString) return 'N/A';
-    const date = new Date(dateString);
-    return date.toLocaleDateString();
-}
-
-function formatTime(dateString) {
-    if (!dateString) return 'N/A';
-    const date = new Date(dateString);
-    return date.toLocaleTimeString();
-}
-
-function formatStation(station) {
-    const stationMap = {
-        'active': 'Active',
-        'sharpen': 'Sharpen',
-        'cabinet': 'Cabinet',
-        'refill': 'Refill'
     };
-    return stationMap[station] || station;
-}
 
-function getStationBadgeClass(station) {
-    return `badge-${station}`;
-}
-
-function getPriorityBadgeClass(priority) {
-    if (priority >= 3) return 'badge-urgent';
-    if (priority === 2) return 'badge-high';
-    if (priority === 1) return 'badge-medium';
-    return 'badge-low';
-}
-
-// Debounce function for preventing double-submits
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
-}
-
-// Auto-focus input after operation
-function refocusInput(inputId) {
-    setTimeout(() => {
-        const input = document.getElementById(inputId);
-        if (input) {
-            input.focus();
-            input.select();
-        }
-    }, 100);
-}
+    global.API = API;
+    global.Session = Session;
+})(window);

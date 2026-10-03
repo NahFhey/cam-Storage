@@ -3,127 +3,144 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CAM Tracking - Hot List</title>
+    <title>Hot List · CAM Tracking</title>
     <link rel="stylesheet" href="/static/css/styles.css">
-</head>
-<body>
-    <nav>
-        <h1>CAM Tracking Kiosk</h1>
-        <div class="nav-links">
-            <a href="/static/index.html">Entry</a>
-            <a href="/static/hot-list.html" class="active">Hot List</a>
-            <a href="/static/search.html">Search</a>
-            <a href="/static/analytics.html">Analytics</a>
-            <a href="/static/admin.html">Admin</a>
-        </div>
-    </nav>
-
-    <div class="container">
-        <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h2 class="card-header" style="margin-bottom: 0;">Priority Hot List</h2>
-                <button id="refreshBtn" class="btn btn-primary">Refresh</button>
-            </div>
-
-            <p style="color: var(--text-light); margin: 1rem 0;">
-                Jobs sorted by urgency. Urgent jobs need immediate attention.
-            </p>
-
-            <div id="loading" class="spinner hidden"></div>
-
-            <div id="hotListContent"></div>
-        </div>
-    </div>
-
+    <script src="/static/js/ui.js"></script>
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/layout.js"></script>
+</head>
+<body data-page="hot-list">
+    <main class="page">
+        <div class="page-header">
+            <div>
+                <h1>Hot list</h1>
+                <p>Jobs with tools waiting on sharpening, most urgent first.</p>
+            </div>
+            <div class="page-actions">
+                <span class="live-dot" id="updatedAt">Loading…</span>
+                <button type="button" class="btn" id="refreshBtn"></button>
+            </div>
+        </div>
+
+        <div class="grid grid-4" id="summary" style="margin-bottom:1rem"></div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">Ranked jobs</div>
+                <div class="legend" id="legend"></div>
+            </div>
+            <div id="hotList"><div class="spinner"></div></div>
+            <details style="margin-top:1rem">
+                <summary class="muted" style="cursor:pointer;font-weight:600">How ranking works</summary>
+                <p class="muted" style="margin-top:0.5rem;font-size:0.92rem">
+                    Score = base priority (Low 0 → Top 4) plus: <strong>+100</strong> if every tool is in Sharpen,
+                    <strong>+100</strong> if a cam position is blocked (every copy in Sharpen or Refill),
+                    <strong>+2</strong> with no cabinet stock while a full set is active,
+                    <strong>+2</strong> with no available sets (<strong>+1</strong> with one),
+                    <strong>+1</strong> with 3 or more tools in Refill.
+                </p>
+            </details>
+        </div>
+    </main>
+
     <script src="/static/js/auth.js"></script>
     <script>
-        const hotListContent = document.getElementById('hotListContent');
-        const loading = document.getElementById('loading');
-        const refreshBtn = document.getElementById('refreshBtn');
+    (function () {
+        'use strict';
+        var U = UI;
+        var refreshBtn = document.getElementById('refreshBtn');
+        var lastLoaded = null;
+        refreshBtn.innerHTML = U.icon('refresh') + 'Refresh';
+        document.getElementById('legend').innerHTML = U.stationLegend().replace(/^<div class="legend">|<\/div>$/g, '');
 
-        async function loadHotList() {
-            loading.classList.remove('hidden');
-            refreshBtn.disabled = true;
+        function counts(j) {
+            return { active: j.active_count, sharpen: j.sharpen_count, cabinet: j.cabinet_count, refill: j.refill_count };
+        }
 
+        function pills(j) {
+            return '<div class="counts">' + U.STATIONS.map(function (s) {
+                var n = j[s + '_count'];
+                return '<span class="count-pill st-' + s + (n ? '' : ' is-zero') + '" title="' + U.stationLabel(s) + '">' +
+                    U.stationLabel(s).charAt(0) + ' ' + n + '</span>';
+            }).join('') + '</div>';
+        }
+
+        var table = null;
+
+        async function load() {
+            U.setLoading(refreshBtn, true);
             try {
-                const hotList = await getHotList();
-
-                if (hotList.length === 0) {
-                    hotListContent.innerHTML = '<p class="text-center">No jobs found</p>';
-                    return;
-                }
-
-                const html = `
-                    <div class="table-responsive">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>Priority Level</th>
-                                    <th>Priority Score</th>
-                                    <th>S-Number</th>
-                                    <th>Title</th>
-                                    <th>Available Sets</th>
-                                    <th>Active</th>
-                                    <th>Sharpen</th>
-                                    <th>Cabinet</th>
-                                    <th>Refill</th>
-                                    <th>Last Update</th>
-                                    <th>Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${hotList.map(job => `
-                                    <tr>
-                                        <td>
-                                            <span class="badge ${getPriorityBadgeClass(job.base_priority)}">
-                                                ${job.priority_label}
-                                            </span>
-                                        </td>
-                                        <td><strong>${job.priority_score}</strong></td>
-                                        <td><strong>S${job.s_number}</strong></td>
-                                        <td>${job.title || '-'}</td>
-                                        <td class="text-center">${job.available_sets}${job.has_blocked_position ? ' <span class="badge badge-refill" style="font-size:0.7rem; padding:0.2rem 0.5rem;" title="A tool position is fully blocked across all sets">BLOCKED</span>' : ''}</td>
-                                        <td class="text-center">${job.active_count}</td>
-                                        <td class="text-center">${job.sharpen_count}</td>
-                                        <td class="text-center">${job.cabinet_count}</td>
-                                        <td class="text-center">${job.refill_count}</td>
-                                        <td>${formatDateTime(job.oldest_update)}</td>
-                                        <td>
-                                            <a href="/static/job-detail.html?id=${job.job_id}" class="btn btn-primary" style="padding: 0.5rem 1rem;">
-                                                View
-                                            </a>
-                                        </td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
-
-                hotListContent.innerHTML = html;
-            } catch (error) {
-                showError(error.message);
+                var list = await API.hotList();
+                list.forEach(function (j, i) { j.rank = i + 1; });
+                renderSummary(list);
+                var columns = [
+                    { key: 'rank', label: '#', className: 'num', render: function (j) { return '<span class="rank">' + j.rank + '</span>'; } },
+                    { key: 's_number', label: 'Job', render: function (j) {
+                        return U.toolId(j.s_number) + (j.title ? '<div class="muted" style="font-size:0.88rem">' + U.esc(j.title) + '</div>' : '');
+                    } },
+                    { key: 'base_priority', label: 'Priority', render: function (j) { return U.priorityBadge(j.priority_level); } },
+                    { key: 'priority_score', label: 'Score', className: 'num', render: function (j) { return '<strong>' + j.priority_score + '</strong>'; } },
+                    { key: 'flags', label: 'Flags', sortable: false, render: function (j) {
+                        return (j.has_blocked_position ? '<span class="flag" title="A cam position has no usable copy in any set">' + U.icon('alert') + 'Blocked</span> ' : '') +
+                            (j.all_in_sharpen ? '<span class="flag flag-warning">All in sharpen</span>' : '') || '<span class="muted">—</span>';
+                    } },
+                    { key: 'available_sets', label: 'Sets ready', className: 'num', render: function (j) {
+                        return '<strong' + (j.available_sets === 0 ? ' style="color:var(--danger)"' : '') + '>' + j.available_sets + '</strong>';
+                    } },
+                    { key: 'sharpen_count', label: 'Tools by station', render: function (j) {
+                        return '<div style="display:grid;gap:0.4rem;min-width:180px">' + U.stackbar(counts(j)) + pills(j) + '</div>';
+                    } },
+                    { key: 'oldest_update', label: 'Oldest move', sortValue: function (j) { var d = U.parseDate(j.oldest_update); return d ? -d.getTime() : null; },
+                      render: function (j) { return '<span class="nowrap" title="' + U.esc(U.formatDateTime(j.oldest_update)) + '">' + U.timeAgo(j.oldest_update) + '</span>'; } },
+                    { key: null, label: '', render: function () { return '<span class="muted">' + U.icon('chevronRight') + '</span>'; } }
+                ];
+                var container = document.getElementById('hotList');
+                var options = {
+                    rows: list, sortKey: 'rank', ascending: true,
+                    rowAttrs: function (j) { return 'class="is-clickable" data-job="' + j.job_id + '"'; },
+                    empty: U.emptyState('checkCircle', 'Nothing on the hot list', 'No job currently has tools waiting in Sharpen.'),
+                    onRender: function (el) {
+                        el.querySelectorAll('tr[data-job]').forEach(function (tr) {
+                            tr.addEventListener('click', function () { location.href = '/static/job-detail.html?id=' + tr.dataset.job; });
+                        });
+                    }
+                };
+                if (table) table.update(list);
+                else table = U.sortableTable(container, columns, options);
+                lastLoaded = Date.now();
+                tick();
+            } catch (err) {
+                document.getElementById('hotList').innerHTML = U.inlineAlert(err.message, 'error');
             } finally {
-                loading.classList.add('hidden');
-                refreshBtn.disabled = false;
+                U.setLoading(refreshBtn, false);
             }
         }
 
-        refreshBtn.addEventListener('click', loadHotList);
-
-        // Load on page load
-        loadHotList();
-
-        // Re-load after login
-        window.addEventListener('userLoggedIn', loadHotList);
-
-        // Auto-refresh every 30 seconds
-        setInterval(loadHotList, 30000);
-
-        function showError(message) {
-            hotListContent.innerHTML = `<div class="alert alert-error">${message}</div>`;
+        function renderSummary(list) {
+            var sum = function (key) { return list.reduce(function (n, j) { return n + j[key]; }, 0); };
+            var tiles = [
+                { label: 'Jobs on list', value: list.length },
+                { label: 'Blocked jobs', value: list.filter(function (j) { return j.has_blocked_position; }).length, sub: 'A cam position has no usable copy' },
+                { label: 'All in sharpen', value: list.filter(function (j) { return j.all_in_sharpen; }).length, sub: 'Every tool waiting' },
+                { label: 'Tools in sharpen', value: sum('sharpen_count'), station: 'sharpen' }
+            ];
+            document.getElementById('summary').innerHTML = tiles.map(function (t) {
+                return '<div class="stat"' + (t.station ? ' data-station="' + t.station + '"' : '') + '><div class="stat-label">' + t.label +
+                    '</div><div class="stat-value">' + U.number(t.value) + '</div>' + (t.sub ? '<div class="stat-sub">' + t.sub + '</div>' : '') + '</div>';
+            }).join('');
         }
+
+        function tick() {
+            if (!lastLoaded) return;
+            var secs = Math.round((Date.now() - lastLoaded) / 1000);
+            document.getElementById('updatedAt').textContent = secs < 5 ? 'Updated just now' : 'Updated ' + secs + 's ago';
+        }
+
+        refreshBtn.addEventListener('click', load);
+        Auth.onReady(load);
+        setInterval(function () { if (document.visibilityState === 'visible' && Session.isLoggedIn()) load(); }, 30000);
+        setInterval(tick, 5000);
+    })();
     </script>
 </body>
 </html>

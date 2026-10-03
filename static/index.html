@@ -3,696 +3,536 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CAM Tracking - Entry</title>
+    <title>Entry · CAM Tracking</title>
     <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="/static/js/ui.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/layout.js"></script>
 </head>
-<body>
-    <nav>
-        <h1>CAM Tracking Kiosk</h1>
-        <div class="nav-links">
-            <a href="/static/index.html" class="active">Entry</a>
-            <a href="/static/hot-list.html">Hot List</a>
-            <a href="/static/search.html">Search</a>
-            <a href="/static/analytics.html">Analytics</a>
-            <a href="/static/admin.html">Admin</a>
-        </div>
-    </nav>
+<body data-page="entry">
+    <main class="page">
+        <div class="entry-layout">
+            <section class="stack-v">
+                <div class="card">
+                    <form id="lookupForm" autocomplete="off">
+                        <label class="field-label" for="entryInput" style="display:block;margin-bottom:0.5rem">Scan or type a tool</label>
+                        <div class="lookup-row">
+                            <div class="input-hero-wrap">
+                                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
+                                <input type="text" id="entryInput" class="input input-hero" placeholder="1793-1-2"
+                                       autocapitalize="characters" spellcheck="false" autofocus>
+                            </div>
+                            <button type="submit" id="lookupBtn" class="btn btn-primary btn-xl">Look up</button>
+                        </div>
+                        <div class="hint-row">
+                            <span><code>S1793 SET1 CAM2</code></span>
+                            <span><code>1793-1-2</code></span>
+                            <span><code>S1793-C2-SET1</code></span>
+                            <span>or just <code>1793</code> for the whole job</span>
+                        </div>
+                    </form>
+                </div>
 
-    <div class="container">
-        <div class="card">
-            <h2 class="card-header text-center">Scan or Enter Tool</h2>
-
-            <div id="alerts"></div>
-
-            <div class="form-group">
-                <input
-                    type="text"
-                    id="entryInput"
-                    class="form-input form-input-large"
-                    placeholder="S1793 SET1 CAM2"
-                    autocomplete="off"
-                    autofocus
-                >
-                <p class="text-center mt-2" style="color: var(--text-light);">
-                    Examples: S1793 SET1 CAM2 | 1793-1-2 | S1793-C2-SET1
-                </p>
-            </div>
-
-            <button id="lookupBtn" class="btn btn-primary btn-large btn-block">
-                Lookup Tool
-            </button>
-        </div>
-
-        <!-- Resolution Results -->
-        <div id="resultsCard" class="card hidden">
-            <h3 class="card-header">Tool Found</h3>
-            <div id="resultsContent"></div>
-        </div>
-
-        <!-- Multiple Candidates -->
-        <div id="candidatesCard" class="card hidden">
-            <h3 class="card-header">Select Tool</h3>
-            <div id="candidatesList" class="candidates-container"></div>
-        </div>
-
-        <!-- Move Screen (shown after selection) -->
-        <div id="moveCard" class="card hidden">
-            <h3 class="card-header text-center">Move Tool</h3>
-
-            <div id="toolInfo" class="text-center mb-4" style="font-size: 1.5rem; font-weight: 700;"></div>
-
-            <div id="currentStation" class="text-center mb-4"></div>
-
-            <div class="text-center mb-3">
-                <label style="font-size: 1.25rem; font-weight: 600; cursor: pointer;">
-                    <input type="checkbox" id="moveEntireSetToggle" style="width: auto; margin-right: 0.5rem; transform: scale(1.5);">
-                    Move Entire Set
-                </label>
-            </div>
-
-            <div class="station-grid">
-                <button class="btn btn-success btn-large station-btn" data-station="active">
-                    Active
-                </button>
-                <button class="btn btn-warning btn-large station-btn" data-station="sharpen">
-                    Sharpen
-                </button>
-                <button class="btn btn-primary btn-large station-btn" data-station="cabinet">
-                    Cabinet
-                </button>
-                <button class="btn btn-danger btn-large station-btn" data-station="refill">
-                    Refill
-                </button>
-            </div>
-
-            <div class="grid grid-2 mt-4">
-                <button id="undoBtn" class="btn btn-secondary btn-large">
-                    Undo Last Move
-                </button>
-                <button id="cancelBtn" class="btn btn-secondary btn-large">
-                    Cancel
-                </button>
-            </div>
-        </div>
-
-        <!-- Move History (shown after move) -->
-        <div id="historyCard" class="card hidden">
-            <h3 class="card-header">Recent Moves for This Tool</h3>
-            <div id="historyContent"></div>
-        </div>
-
-        <!-- Material Removal Modal -->
-        <div id="materialModal" class="modal hidden">
-            <div class="modal-content">
-                <h3 class="card-header">Material Removed During Sharpening</h3>
-                <p style="margin: 1rem 0; color: #666;">
-                    Enter the amount of material removed in thousandths of an inch.
-                </p>
-                <div style="margin: 1.5rem 0;">
-                    <label for="materialInput" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
-                        Material Removed (inches):
-                    </label>
-                    <input
-                        type="text"
-                        id="materialInput"
-                        class="form-input"
-                        placeholder="Type digits (e.g., 12 = 0.012)"
-                        style="font-size: 1.5rem; text-align: center; font-weight: 700;"
-                        maxlength="4"
-                        autocomplete="off"
-                    >
-                    <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #666;">
-                        Max: 1.000 inches
+                <!-- Shop status while idle -->
+                <div id="idlePanel" class="stack-v">
+                    <div class="grid grid-4" id="stationTiles"></div>
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Needs attention</div>
+                            <a href="/static/hot-list.html" class="btn btn-sm btn-ghost">Full hot list</a>
+                        </div>
+                        <div id="attentionList" class="attention-list"></div>
                     </div>
                 </div>
-                <div style="display: flex; gap: 1rem;">
-                    <button id="materialConfirmBtn" class="btn btn-success btn-large" style="flex: 1;">
-                        Confirm Move
-                    </button>
-                    <button id="materialCancelBtn" class="btn btn-secondary btn-large" style="flex: 1;">
-                        Cancel
-                    </button>
+
+                <!-- Pick a set or cam -->
+                <div id="pickerCard" class="card hidden">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title" id="pickerTitle"></div>
+                            <div class="card-subtitle">Tap a cam to move it, or a set to move every cam in it.</div>
+                        </div>
+                        <button type="button" class="btn btn-ghost btn-icon" data-action="reset" aria-label="Close"></button>
+                    </div>
+                    <div id="pickerList" class="set-list"></div>
                 </div>
-            </div>
+
+                <!-- Move a tool or set -->
+                <div id="moveCard" class="card tool-card hidden" tabindex="-1">
+                    <div class="tool-header">
+                        <div>
+                            <div class="tool-title" id="toolTitle"></div>
+                            <div class="tool-meta" id="toolMeta"></div>
+                        </div>
+                        <div id="toolStation"></div>
+                    </div>
+                    <div id="lifeInfo"></div>
+
+                    <div class="row-between" style="margin:1.25rem 0 0.85rem">
+                        <div class="segmented" role="group" aria-label="What to move">
+                            <button type="button" data-scope="cam" aria-pressed="true">This cam</button>
+                            <button type="button" data-scope="set" aria-pressed="false" id="setScopeBtn">Entire set</button>
+                        </div>
+                        <span class="muted" id="scopeHint"></span>
+                    </div>
+
+                    <div class="station-grid" id="stationGrid"></div>
+
+                    <div class="row-between" style="margin-top:1rem">
+                        <button type="button" id="undoBtn" class="btn btn-lg"></button>
+                        <button type="button" class="btn btn-lg btn-ghost" data-action="reset">Cancel <kbd style="background:var(--surface-3)">Esc</kbd></button>
+                    </div>
+
+                    <div id="historyBlock" class="hidden">
+                        <h3 class="section-title">Recent moves for this tool</h3>
+                        <div id="historyList" class="timeline"></div>
+                    </div>
+                </div>
+            </section>
+
+            <aside class="card">
+                <div class="card-header" style="margin-bottom:0.25rem">
+                    <div class="card-title">Recent activity</div>
+                    <span class="live-dot">Live</span>
+                </div>
+                <div id="activityList" class="activity">
+                    <div class="skeleton" style="height:3rem;margin:0.5rem 0"></div>
+                    <div class="skeleton" style="height:3rem;margin:0.5rem 0"></div>
+                    <div class="skeleton" style="height:3rem;margin:0.5rem 0"></div>
+                </div>
+            </aside>
         </div>
-    </div>
+    </main>
 
-    <style>
-        .modal {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.7);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-        }
-        .modal.hidden {
-            display: none;
-        }
-        .modal-content {
-            background: white;
-            padding: 2rem;
-            border-radius: 0.5rem;
-            max-width: 500px;
-            width: 90%;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-    </style>
-
-    <script src="/static/js/api.js"></script>
     <script src="/static/js/auth.js"></script>
     <script>
-        let currentCamItem = null;
-        let currentJob = null;
+    (function () {
+        'use strict';
+        var U = UI;
 
-        const entryInput = document.getElementById('entryInput');
-        const lookupBtn = document.getElementById('lookupBtn');
-        const resultsCard = document.getElementById('resultsCard');
-        const resultsContent = document.getElementById('resultsContent');
-        const candidatesCard = document.getElementById('candidatesCard');
-        const candidatesList = document.getElementById('candidatesList');
-        const moveCard = document.getElementById('moveCard');
-        const toolInfo = document.getElementById('toolInfo');
-        const currentStation = document.getElementById('currentStation');
-        const historyCard = document.getElementById('historyCard');
-        const historyContent = document.getElementById('historyContent');
-        const undoBtn = document.getElementById('undoBtn');
-        const cancelBtn = document.getElementById('cancelBtn');
+        var state = { cam: null, job: null, scope: 'cam', setCams: [] };
 
-        // Lookup tool on button click or Enter key
-        lookupBtn.addEventListener('click', handleLookup);
-        entryInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                handleLookup();
-            }
+        var form = document.getElementById('lookupForm');
+        var entryInput = document.getElementById('entryInput');
+        var lookupBtn = document.getElementById('lookupBtn');
+        var pickerCard = document.getElementById('pickerCard');
+        var moveCard = document.getElementById('moveCard');
+        var undoBtn = document.getElementById('undoBtn');
+        var idlePanel = document.getElementById('idlePanel');
+
+        undoBtn.innerHTML = U.icon('undo') + 'Undo last move';
+        document.querySelectorAll('[data-action="reset"]').forEach(function (btn) {
+            if (!btn.textContent.trim()) btn.innerHTML = U.icon('x');
+            btn.addEventListener('click', resetUI);
         });
 
-        async function handleLookup() {
-            const entry = entryInput.value.trim();
+        document.getElementById('stationGrid').innerHTML = U.STATIONS.map(function (s) {
+            var meta = U.STATION_META[s];
+            return '<button type="button" class="station-btn" data-station="' + s + '">' +
+                '<span class="station-top">' + U.icon(meta.icon) + '<span class="current-tag hidden">Current</span></span>' +
+                '<span><span class="station-name">' + meta.label + '</span><br><span class="station-hint">' + meta.hint + '</span></span>' +
+                '</button>';
+        }).join('');
+
+        // ========== Lookup ==========
+
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            lookup(entryInput.value.trim());
+        });
+
+        async function lookup(entry) {
             if (!entry) {
-                showError('Please enter a tool identifier');
+                U.toast('Scan or type a tool first', { type: 'warning' });
+                entryInput.focus();
                 return;
             }
-
-            lookupBtn.disabled = true;
-            lookupBtn.textContent = 'Looking up...';
-
+            U.setLoading(lookupBtn, true);
             try {
-                const result = await resolveEntry(entry);
-
+                var result = await API.resolveEntry(entry);
                 if (result.status === 'exact') {
-                    // Exact match found
-                    await showMoveScreen(result.cam_item, result.job);
+                    await showMove(result.cam_item, result.job);
                 } else if (result.status === 'multiple') {
-                    // Multiple candidates
-                    showCandidates(result.candidates, result.job);
-                } else if (result.status === 'not_found') {
-                    showError(result.message || 'Tool not found');
-                    entryInput.select();
+                    showPicker(result.candidates, result.job);
                 } else if (result.status === 'job_not_found') {
-                    showError(`Job not found: S${result.s_number}`);
+                    U.toast('No job S' + result.s_number, { type: 'error', detail: 'Check the number or ask an admin to create the job.' });
+                    entryInput.select();
+                } else {
+                    U.toast(result.message || 'Tool not found', { type: 'error' });
                     entryInput.select();
                 }
-            } catch (error) {
-                showError(error.message);
+            } catch (err) {
+                U.toast(err.message, { type: 'error' });
             } finally {
-                lookupBtn.disabled = false;
-                lookupBtn.textContent = 'Lookup Tool';
+                U.setLoading(lookupBtn, false);
             }
         }
 
-        function showCandidates(candidates, job) {
-            currentJob = job;
+        // ========== Picker ==========
 
-            // Group by set_no
-            const sets = {};
-            candidates.forEach(cam => {
-                if (!sets[cam.set_no]) sets[cam.set_no] = [];
-                sets[cam.set_no].push(cam);
+        var pickerCams = {};
+
+        function showPicker(cams, job) {
+            state.job = job;
+            pickerCams = {};
+            var sets = {};
+            cams.forEach(function (cam) {
+                pickerCams[cam.id] = cam;
+                (sets[cam.set_no] = sets[cam.set_no] || []).push(cam);
             });
 
-            // Priority: refill (highest) > sharpen > active > cabinet (lowest)
-            const stationPriority = { refill: 4, sharpen: 3, active: 2, cabinet: 1 };
-            const stationBtnClass = { refill: 'btn-danger', sharpen: 'btn-warning', active: 'btn-success', cabinet: 'btn-primary' };
+            document.getElementById('pickerTitle').innerHTML = U.toolId(job.s_number) +
+                (job.title ? ' <span class="muted" style="font-weight:500">' + U.esc(job.title) + '</span>' : '');
 
-            function getSetPriorityClass(cams) {
-                let highest = 0, station = 'cabinet';
-                cams.forEach(cam => {
-                    const p = stationPriority[cam.status_station] || 0;
-                    if (p > highest) { highest = p; station = cam.status_station; }
-                });
-                return stationBtnClass[station] || 'btn-primary';
-            }
+            document.getElementById('pickerList').innerHTML = Object.keys(sets).map(Number).sort(function (a, b) { return a - b; }).map(function (setNo) {
+                var setCams = sets[setNo].sort(function (a, b) { return a.cam_no - b.cam_no; });
+                var counts = {};
+                setCams.forEach(function (c) { counts[c.status_station] = (counts[c.status_station] || 0) + 1; });
+                return '<div class="set-row">' +
+                    '<button type="button" class="set-btn" data-set-cam="' + setCams[0].id + '">' +
+                    '<strong>Set ' + U.esc(setNo) + '</strong><small>' + U.icon('layers') + 'Move all ' + setCams.length + '</small>' +
+                    U.stackbar(counts) + '</button>' +
+                    '<div class="cam-grid">' + setCams.map(function (cam) {
+                        return '<button type="button" class="cam-btn" data-cam="' + cam.id + '">' +
+                            '<strong>Cam ' + U.esc(cam.cam_no) + '</strong>' + U.stationBadge(cam.status_station) + '</button>';
+                    }).join('') + '</div></div>';
+            }).join('');
 
-            const sortedSetNos = Object.keys(sets).map(Number).sort((a, b) => a - b);
-            const totalRows = candidates.length;
-
-            let html = '<div class="table-responsive"><table class="table candidates-table"><tbody>';
-            let firstSet = true;
-
-            sortedSetNos.forEach(setNo => {
-                const cams = sets[setNo].sort((a, b) => a.cam_no - b.cam_no);
-                const btnClass = getSetPriorityClass(cams);
-
-                cams.forEach((cam, index) => {
-                    html += '<tr>';
-
-                    // S-number cell: spans ALL rows, only on very first row
-                    if (firstSet && index === 0) {
-                        html += `<td rowspan="${totalRows}" class="candidates-snumber-cell">
-                            <strong>S${job.s_number}</strong>
-                        </td>`;
-                    }
-
-                    // Set cell: spans this set's rows, only on first cam of each set
-                    if (index === 0) {
-                        html += `<td rowspan="${cams.length}" class="candidates-set-cell ${btnClass}"
-                            onclick="showMoveScreen(window._candidatesCams['${setNo}_${cam.id}'], window._candidatesJob, true)"
-                            role="button" tabindex="0">
-                            <strong>Set ${setNo}</strong>
-                        </td>`;
-                    }
-
-                    // Cam cell + Station badge: clickable for individual cam
-                    html += `<td class="candidates-cam-cell"
-                        onclick="showMoveScreen(window._candidatesCams['${setNo}_${cam.id}'], window._candidatesJob, false)"
-                        role="button" tabindex="0">
-                        Cam ${cam.cam_no}
-                    </td>`;
-                    html += `<td class="candidates-station-cell"
-                        onclick="showMoveScreen(window._candidatesCams['${setNo}_${cam.id}'], window._candidatesJob, false)"
-                        role="button" tabindex="0">
-                        <span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span>
-                    </td>`;
-
-                    html += '</tr>';
-                    if (index === 0) firstSet = false;
-                });
+            document.querySelectorAll('#pickerList [data-cam]').forEach(function (btn) {
+                btn.addEventListener('click', function () { showMove(pickerCams[btn.dataset.cam], state.job, 'cam'); });
+            });
+            document.querySelectorAll('#pickerList [data-set-cam]').forEach(function (btn) {
+                btn.addEventListener('click', function () { showMove(pickerCams[btn.dataset.setCam], state.job, 'set'); });
             });
 
-            html += '</tbody></table></div>';
-            candidatesList.innerHTML = html;
-
-            // Store data references for onclick handlers
-            window._candidatesJob = job;
-            window._candidatesCams = {};
-            candidates.forEach(cam => {
-                window._candidatesCams[`${cam.set_no}_${cam.id}`] = cam;
-            });
-
-            resultsCard.classList.add('hidden');
-            candidatesCard.classList.remove('hidden');
             moveCard.classList.add('hidden');
+            idlePanel.classList.add('hidden');
+            pickerCard.classList.remove('hidden');
         }
 
-        async function showMoveScreen(camItem, job, moveEntireSet) {
-            currentCamItem = camItem;
-            currentJob = job;
-            document.getElementById('moveEntireSetToggle').checked = !!moveEntireSet;
+        // ========== Move screen ==========
 
-            // Build tool info with die position and orientation
-            let toolInfoText = `S${job.s_number} Set${camItem.set_no} Cam${camItem.cam_no}`;
-            if (camItem.die_position) {
-                toolInfoText += ` (${camItem.die_position.toUpperCase()})`;
-            }
-            if (camItem.enter_die_steel) {
-                toolInfoText += ` - ${camItem.enter_die_steel}`;
-            }
-
-            toolInfo.textContent = toolInfoText;
-
-            // Color-code toolInfo based on status
-            const stationColors = {
-                'active': '#dcfce7',    // green
-                'sharpen': '#fed7aa',   // orange
-                'cabinet': '#dbeafe',   // blue
-                'refill': '#fecaca'     // red
-            };
-            toolInfo.style.backgroundColor = stationColors[camItem.status_station] || '#f3f4f6';
-            toolInfo.style.padding = '1rem';
-            toolInfo.style.borderRadius = '0.5rem';
-
-            currentStation.innerHTML = `
-                Current Station: <span class="badge ${getStationBadgeClass(camItem.status_station)}">
-                    ${formatStation(camItem.status_station)}
-                </span>
-            `;
-
-            // Remove any previous lifespan warning
-            const oldWarning = document.getElementById('lifespanWarning');
-            if (oldWarning) oldWarning.remove();
-
-            // Fetch lifespan data and show warning
-            try {
-                const ls = await getCamLifespan(camItem.id);
-                if (ls && ls.current_lifespan) {
-                    const pct = ls.current_lifespan.percent_life_used;
-                    const remaining = ls.current_lifespan.material_remaining;
-                    const estRemaining = ls.forecast.estimated_sharpenings_remaining;
-                    let warningHtml = '';
-                    if (pct >= 90) {
-                        warningHtml = `<div id="lifespanWarning" style="margin-top:0.75rem; padding:0.75rem 1rem; border-radius:0.5rem; background:#fef2f2; border:1px solid #fecaca; color:#991b1b; text-align:center; font-weight:600;">
-                            NEAR END OF LIFE: ${remaining.toFixed(3)}" remaining (${pct.toFixed(0)}% used)${estRemaining !== null ? ' &mdash; ~' + estRemaining + ' sharpenings left' : ''}
-                        </div>`;
-                    } else if (pct >= 70) {
-                        warningHtml = `<div id="lifespanWarning" style="margin-top:0.75rem; padding:0.75rem 1rem; border-radius:0.5rem; background:#fffbeb; border:1px solid #fde68a; color:#92400e; text-align:center;">
-                            Life: ${remaining.toFixed(3)}" remaining (${pct.toFixed(0)}% used)${estRemaining !== null ? ' &mdash; ~' + estRemaining + ' sharpenings left' : ''}
-                        </div>`;
-                    } else if (pct > 0) {
-                        warningHtml = `<div id="lifespanWarning" style="margin-top:0.75rem; text-align:center; color:#6b7280; font-size:0.9rem;">
-                            Life: ${remaining.toFixed(3)}" remaining (${pct.toFixed(0)}% used)${estRemaining !== null ? ' &mdash; ~' + estRemaining + ' sharpenings left' : ''}
-                        </div>`;
-                    }
-                    if (warningHtml) {
-                        currentStation.insertAdjacentHTML('afterend', warningHtml);
-                    }
-                }
-            } catch (e) {
-                console.error('Failed to load lifespan:', e);
-            }
-
-            // Enable/disable station buttons
-            const stationBtns = document.querySelectorAll('.station-btn');
-            stationBtns.forEach(btn => {
-                const station = btn.dataset.station;
-                if (station === camItem.status_station) {
-                    btn.disabled = true;
-                    btn.style.opacity = '0.5';
-                } else {
-                    btn.disabled = false;
-                    btn.style.opacity = '1';
-                }
-            });
-
-            resultsCard.classList.add('hidden');
-            candidatesCard.classList.add('hidden');
+        async function showMove(cam, job, scope) {
+            state.cam = cam;
+            state.job = job;
+            pickerCard.classList.add('hidden');
+            idlePanel.classList.add('hidden');
             moveCard.classList.remove('hidden');
-            historyCard.classList.add('hidden');
+            moveCard.dataset.station = cam.status_station;
 
-            // Load move history
-            loadMoveHistory(camItem.id);
-        }
+            document.getElementById('toolTitle').innerHTML = U.toolId(job.s_number, cam.set_no, cam.cam_no);
+            var meta = [];
+            if (job.title) meta.push('<span>' + U.esc(job.title) + '</span>');
+            if (cam.die_position) meta.push('<span class="chip">' + U.esc(U.capitalize(cam.die_position)) + ' die</span>');
+            if (cam.enter_die_steel) meta.push('<span class="chip">' + U.esc(U.capitalize(cam.enter_die_steel)) + '</span>');
+            meta.push('<span>Updated ' + U.timeAgo(cam.status_updated_at) + '</span>');
+            document.getElementById('toolMeta').innerHTML = meta.join('');
+            document.getElementById('toolStation').innerHTML = U.stationBadge(cam.status_station, true);
+            document.getElementById('lifeInfo').innerHTML = '';
+            document.getElementById('historyBlock').classList.add('hidden');
 
-        async function loadMoveHistory(camItemId) {
+            // Set members are needed for the scope toggle and set moves
+            state.setCams = [];
             try {
-                const data = await getCamItem(camItemId);
-                const moves = data.moves.filter(m => !m.undone).slice(0, 5);
+                var data = await API.job(job.id);
+                if (state.cam !== cam) return;
+                state.setCams = data.cam_items.filter(function (c) { return c.set_no === cam.set_no; });
+            } catch (e) { /* set scope unavailable */ }
+            document.getElementById('setScopeBtn').textContent = 'Entire set (' + (state.setCams.length || '?') + ')';
+            setScope(scope || 'cam');
+            moveCard.focus({ preventScroll: true });
+            moveCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-                if (moves.length > 0) {
-                    historyContent.innerHTML = `
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>From</th>
-                                    <th>To</th>
-                                    <th>When</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${moves.map(m => `
-                                    <tr>
-                                        <td>${formatStation(m.from_station)}</td>
-                                        <td>${formatStation(m.to_station)}</td>
-                                        <td>${formatDateTime(m.moved_at)}</td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    `;
-                    historyCard.classList.remove('hidden');
-                }
-            } catch (error) {
-                console.error('Failed to load history:', error);
-            }
+            loadLife(cam);
+            loadHistory(cam);
         }
 
-        // Material removal modal elements
-        const materialModal = document.getElementById('materialModal');
-        const materialInput = document.getElementById('materialInput');
-        const materialConfirmBtn = document.getElementById('materialConfirmBtn');
-        const materialCancelBtn = document.getElementById('materialCancelBtn');
-
-        // Auto-format material input as backfill (15 -> 0.015, 125 -> 0.125)
-        // Use keydown to capture digits and manage raw value via data-value attribute
-        materialInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                materialConfirmBtn.click();
-                return;
-            }
-
-            let rawDigits = materialInput.getAttribute('data-value') || '';
-
-            if (e.key === 'Backspace') {
-                e.preventDefault();
-                rawDigits = rawDigits.slice(0, -1);
-            } else if (/^[0-9]$/.test(e.key)) {
-                e.preventDefault();
-                const proposed = rawDigits + e.key;
-                // Max 4 digits (0-1000 thousandths), reject if would exceed 1.000
-                if (proposed.length <= 4 && parseInt(proposed) <= 1000) {
-                    rawDigits = proposed;
-                }
-            } else if (e.key !== 'Tab') {
-                // Allow Tab for accessibility, block everything else
-                e.preventDefault();
-                return;
-            }
-
-            const num = parseInt(rawDigits || '0');
-            const formatted = (num / 1000).toFixed(3);
-            materialInput.setAttribute('data-value', rawDigits);
-            materialInput.value = formatted;
-        });
-
-        // Block paste and direct input to enforce backfill entry
-        materialInput.addEventListener('input', (e) => {
-            // Restore from data-value if someone pastes or otherwise modifies directly
-            const rawDigits = materialInput.getAttribute('data-value') || '';
-            const num = parseInt(rawDigits || '0');
-            materialInput.value = (num / 1000).toFixed(3);
-        });
-
-        // Helper function to prompt for material removed
-        function promptForMaterialRemoved(camInfo) {
-            return new Promise((resolve, reject) => {
-                materialModal.classList.remove('hidden');
-                materialInput.value = '0.000';
-                materialInput.setAttribute('data-value', '');
-                materialInput.focus();
-
-                // Update modal with cam info
-                const modalTitle = document.querySelector('#materialModal h3');
-                modalTitle.textContent = `Material Removed: ${camInfo}`;
-
-                const confirmHandler = () => {
-                    const value = parseFloat(materialInput.value);
-                    if (isNaN(value) || value < 0 || value > 1.0) {
-                        showError('Invalid material removed value. Must be between 0.000 and 1.000');
-                        return;
-                    }
-                    cleanup();
-                    resolve(value);
-                };
-
-                const cancelHandler = () => {
-                    cleanup();
-                    reject(new Error('Material input cancelled'));
-                };
-
-                const cleanup = () => {
-                    materialModal.classList.add('hidden');
-                    materialConfirmBtn.removeEventListener('click', confirmHandler);
-                    materialCancelBtn.removeEventListener('click', cancelHandler);
-                };
-
-                materialConfirmBtn.addEventListener('click', confirmHandler);
-                materialCancelBtn.addEventListener('click', cancelHandler);
+        function setScope(scope) {
+            state.scope = scope === 'set' && state.setCams.length > 1 ? 'set' : 'cam';
+            document.querySelectorAll('[data-scope]').forEach(function (b) {
+                b.setAttribute('aria-pressed', String(b.dataset.scope === state.scope));
             });
+            document.getElementById('setScopeBtn').disabled = state.setCams.length <= 1;
+
+            var counts = {};
+            state.setCams.forEach(function (c) { counts[c.status_station] = (counts[c.status_station] || 0) + 1; });
+            document.querySelectorAll('.station-btn').forEach(function (btn) {
+                var s = btn.dataset.station;
+                var isCurrent = state.scope === 'cam'
+                    ? s === state.cam.status_station
+                    : counts[s] === state.setCams.length;
+                btn.classList.toggle('is-current', isCurrent);
+                btn.disabled = isCurrent;
+                btn.querySelector('.current-tag').classList.toggle('hidden', !isCurrent);
+            });
+            document.getElementById('scopeHint').innerHTML = state.scope === 'set'
+                ? U.esc(U.STATIONS.filter(function (s) { return counts[s]; }).map(function (s) { return counts[s] + ' ' + U.stationLabel(s); }).join(' · '))
+                : '';
         }
 
-        // Station button clicks
-        document.querySelectorAll('.station-btn').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const toStation = btn.dataset.station;
-                const moveEntireSet = document.getElementById('moveEntireSetToggle').checked;
-                btn.disabled = true;
+        document.querySelectorAll('[data-scope]').forEach(function (b) {
+            b.addEventListener('click', function () { setScope(b.dataset.scope); });
+        });
 
-                try {
-                    if (moveEntireSet) {
-                        // Move entire set
-                        const jobData = await getJob(currentJob.id);
-                        const camsInSet = jobData.cam_items.filter(c => c.set_no === currentCamItem.set_no);
+        async function loadLife(cam) {
+            try {
+                var ls = await API.camLifespan(cam.id);
+                if (state.cam !== cam) return;
+                var cur = ls.current_lifespan;
+                var est = ls.forecast.estimated_sharpenings_remaining;
+                var pct = cur.percent_life_used;
+                var html = '<div class="life-line"><span class="muted" style="font-weight:600">Material life</span>' + U.meter(pct) +
+                    '<span></span><span class="muted">' + U.inches(cur.material_remaining) + ' remaining' +
+                    (est !== null ? ' · about ' + est + ' sharpening' + (est === 1 ? '' : 's') + ' left' : '') +
+                    (cur.lifespan_number ? ' · lifespan #' + cur.lifespan_number : '') + '</span></div>';
+                if (pct >= 90) html = U.inlineAlert('Near end of life: ' + U.inches(cur.material_remaining) + ' remaining. Plan a refill.', 'error') + html;
+                else if (pct >= 70) html = U.inlineAlert(pct.toFixed(0) + '% of material life used.', 'warning') + html;
+                document.getElementById('lifeInfo').innerHTML = '<div style="margin-top:1rem">' + html + '</div>';
+            } catch (e) { /* lifespan is informational */ }
+        }
 
-                        let movedCount = 0;
-                        let bumpedSetNumbers = new Set();
+        async function loadHistory(cam) {
+            try {
+                var data = await API.camItem(cam.id);
+                if (state.cam !== cam) return;
+                var moves = data.moves.filter(function (m) { return !m.undone; }).slice(0, 5);
+                if (!moves.length) return;
+                document.getElementById('historyList').innerHTML = moves.map(function (m) {
+                    return '<div class="timeline-item"><div>' + U.stationBadge(m.from_station) + '<span class="arrow">→</span>' +
+                        U.stationBadge(m.to_station) +
+                        (m.material_removed !== null ? ' <span class="muted">' + U.inches(m.material_removed) + ' removed</span>' : '') +
+                        '</div><div class="muted nowrap" title="' + U.esc(U.formatDateTime(m.moved_at)) + '">' +
+                        U.esc(m.operator || '') + ' · ' + U.timeAgo(m.moved_at) + '</div></div>';
+                }).join('');
+                document.getElementById('historyBlock').classList.remove('hidden');
+            } catch (e) { /* history is informational */ }
+        }
 
-                        // If moving to active, first bump any other active sets with matching die positions
-                        if (toStation === 'active') {
-                            const diePositionsInSet = [...new Set(camsInSet.map(c => c.die_position).filter(Boolean))];
+        // ========== Moving ==========
 
-                            for (const diePos of diePositionsInSet) {
-                                // Find all cams from OTHER sets that are active with this die position
-                                const activeCamsToMove = jobData.cam_items.filter(c =>
-                                    c.set_no !== currentCamItem.set_no &&
-                                    c.status_station === 'active' &&
-                                    c.die_position === diePos
-                                );
-
-                                // Move entire active set(s) to sharpen
-                                const activeSets = [...new Set(activeCamsToMove.map(c => c.set_no))];
-                                for (const activeSetNo of activeSets) {
-                                    const camsToMove = jobData.cam_items.filter(c =>
-                                        c.set_no === activeSetNo && c.status_station === 'active'
-                                    );
-
-                                    for (const cam of camsToMove) {
-                                        try {
-                                            await moveCam({
-                                                cam_item_id: cam.id,
-                                                to_station: 'sharpen'
-                                            });
-                                            bumpedSetNumbers.add(activeSetNo);
-                                        } catch (error) {
-                                            console.error(`Failed to bump cam ${cam.id}:`, error);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Now move the entire current set to target station
-                        for (const cam of camsInSet) {
-                            // Skip if already at target station
-                            if (cam.status_station === toStation) continue;
-
-                            try {
-                                let material_removed = null;
-                                // Prompt for material removed if moving from sharpen to cabinet
-                                if (cam.status_station === 'sharpen' && toStation === 'cabinet') {
-                                    const camInfo = `S${currentJob.s_number} Set${cam.set_no} Cam${cam.cam_no}`;
-                                    material_removed = await promptForMaterialRemoved(camInfo);
-                                }
-
-                                await moveCam({
-                                    cam_item_id: cam.id,
-                                    to_station: toStation,
-                                    material_removed: material_removed
-                                });
-                                movedCount++;
-                            } catch (error) {
-                                if (error.message === 'Material input cancelled') {
-                                    // User cancelled - stop moving set
-                                    throw error;
-                                }
-                                console.error(`Failed to move cam ${cam.id}:`, error);
-                            }
-                        }
-
-                        if (movedCount > 0 || bumpedSetNumbers.size > 0) {
-                            let message = `Moved ${movedCount} CAM(s) from Set ${currentCamItem.set_no} to ${formatStation(toStation)}`;
-                            if (bumpedSetNumbers.size > 0) {
-                                const bumpedSets = Array.from(bumpedSetNumbers).sort().join(', ');
-                                message += ` (bumped Set ${bumpedSets} to Sharpen)`;
-                            }
-                            showSuccess(message);
-                            resetUI();
-                        } else {
-                            showError('No CAMs were moved (all already at target station)');
-                            btn.disabled = false;
-                        }
-                    } else {
-                        // Move single cam
-                        let material_removed = null;
-                        // Prompt for material removed if moving from sharpen to cabinet
-                        if (currentCamItem.status_station === 'sharpen' && toStation === 'cabinet') {
-                            const camInfo = `S${currentJob.s_number} Set${currentCamItem.set_no} Cam${currentCamItem.cam_no}`;
-                            material_removed = await promptForMaterialRemoved(camInfo);
-                        }
-
-                        const result = await moveCam({
-                            cam_item_id: currentCamItem.id,
-                            to_station: toStation,
-                            material_removed: material_removed
-                        });
-
-                        showSuccess(`Moved to ${formatStation(toStation)}`);
-
-                        if (result.auto_bumped) {
-                            showAlert(
-                                `Auto-bumped Set${result.auto_bumped.set_no} Cam${result.auto_bumped.cam_no} to Sharpen`,
-                                'info'
-                            );
-                        }
-
-                        // Reset UI for next scan
-                        resetUI();
-                    }
-                } catch (error) {
-                    showError(error.message);
-                    btn.disabled = false;
-                }
+        document.querySelectorAll('.station-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                if (btn.disabled) return;
+                var station = btn.dataset.station;
+                (state.scope === 'set' ? moveSet(station, btn) : moveOne(station, btn));
             });
         });
 
-        // Undo button
-        undoBtn.addEventListener('click', async () => {
-            if (!confirm('Undo the last move for this tool?')) return;
+        function busy(on) {
+            document.querySelectorAll('.station-btn').forEach(function (b) { b.style.pointerEvents = on ? 'none' : ''; });
+        }
 
-            undoBtn.disabled = true;
+        async function moveOne(station, btn) {
+            var cam = state.cam, job = state.job;
+            var label = U.toolIdText(job.s_number, cam.set_no, cam.cam_no);
+            var material = null;
+            if (cam.status_station === 'sharpen' && station === 'cabinet') {
+                material = await U.materialDialog(label);
+                if (material === null) return;
+            }
+            busy(true);
+            btn.style.opacity = '0.6';
             try {
-                const result = await undoMove(currentCamItem.id);
-                showSuccess(`Undone: reverted to ${formatStation(result.reverted_to_station)}`);
+                var result = await API.moveCam({ cam_item_id: cam.id, to_station: station, material_removed: material });
+                U.toast(label + ' → ' + U.stationLabel(station), {
+                    type: 'success',
+                    detail: result.auto_bumped
+                        ? 'Auto-bumped Set ' + result.auto_bumped.set_no + ' Cam ' + result.auto_bumped.cam_no + ' to Sharpen'
+                        : null,
+                    action: { label: 'Undo', onClick: function () { undoMany([cam.id].concat(result.auto_bumped ? [result.auto_bumped.cam_item_id] : []), label); } }
+                });
                 resetUI();
-            } catch (error) {
-                showError(error.message);
-                undoBtn.disabled = false;
+            } catch (err) {
+                U.toast(err.message, { type: 'error' });
+            } finally {
+                busy(false);
+                btn.style.opacity = '';
+            }
+        }
+
+        async function moveSet(station, btn) {
+            var job = state.job, setNo = state.cam.set_no;
+            var material = {};
+            // Collect every reading first: cancelling leaves the whole set untouched
+            if (station === 'cabinet') {
+                var sharpened = state.setCams.filter(function (c) { return c.status_station === 'sharpen'; })
+                    .sort(function (a, b) { return a.cam_no - b.cam_no; });
+                for (var i = 0; i < sharpened.length; i++) {
+                    var c = sharpened[i];
+                    var value = await U.materialDialog(U.toolIdText(job.s_number, c.set_no, c.cam_no) +
+                        (sharpened.length > 1 ? ' (' + (i + 1) + ' of ' + sharpened.length + ')' : ''));
+                    if (value === null) return;
+                    material[c.id] = value;
+                }
+            }
+            busy(true);
+            btn.style.opacity = '0.6';
+            try {
+                var result = await API.moveSet({ job_id: job.id, set_no: setNo, to_station: station, material_removed: material });
+                var label = U.toolIdText(job.s_number, setNo);
+                var ids = result.moved.concat(result.bumped).map(function (m) { return m.cam_item_id; });
+                U.toast(label + ': ' + result.moved.length + ' cam' + (result.moved.length === 1 ? '' : 's') + ' → ' + U.stationLabel(station), {
+                    type: 'success',
+                    detail: result.bumped_sets.length ? 'Bumped Set ' + result.bumped_sets.join(', ') + ' to Sharpen' : null,
+                    action: { label: 'Undo', onClick: function () { undoMany(ids, label); } }
+                });
+                resetUI();
+            } catch (err) {
+                U.toast(err.message, { type: 'error' });
+            } finally {
+                busy(false);
+                btn.style.opacity = '';
+            }
+        }
+
+        async function undoMany(camIds, label) {
+            var failed = 0;
+            for (var i = 0; i < camIds.length; i++) {
+                try { await API.undoMove(camIds[i]); } catch (e) { failed++; }
+            }
+            if (failed) U.toast('Undo failed for ' + failed + ' tool(s)', { type: 'error' });
+            else U.toast('Undid move: ' + label, { type: 'info' });
+            loadActivity();
+        }
+
+        undoBtn.addEventListener('click', async function () {
+            var cam = state.cam;
+            var label = U.toolIdText(state.job.s_number, cam.set_no, cam.cam_no);
+            var ok = await U.confirmDialog('Undo last move?', 'Reverts the most recent move recorded for ' + label + '.', { confirmLabel: 'Undo move' });
+            if (!ok) return;
+            U.setLoading(undoBtn, true);
+            try {
+                var result = await API.undoMove(cam.id);
+                U.toast(label + ' reverted to ' + U.stationLabel(result.reverted_to_station), { type: 'success' });
+                resetUI();
+            } catch (err) {
+                U.toast(err.message, { type: 'error' });
+            } finally {
+                U.setLoading(undoBtn, false);
             }
         });
-
-        // Cancel button
-        cancelBtn.addEventListener('click', resetUI);
 
         function resetUI() {
-            currentCamItem = null;
-            currentJob = null;
-            entryInput.value = '';
-            resultsCard.classList.add('hidden');
-            candidatesCard.classList.add('hidden');
+            state.cam = null;
+            state.setCams = [];
+            pickerCard.classList.add('hidden');
             moveCard.classList.add('hidden');
-            historyCard.classList.add('hidden');
-            refocusInput('entryInput');
+            entryInput.value = '';
+            entryInput.focus();
+            idlePanel.classList.remove('hidden');
+            loadActivity();
+            loadIdle();
         }
 
-        function showError(message) {
-            const alertDiv = document.createElement('div');
-            alertDiv.className = 'alert alert-error';
-            alertDiv.textContent = message;
-            document.getElementById('alerts').innerHTML = '';
-            document.getElementById('alerts').appendChild(alertDiv);
-            setTimeout(() => alertDiv.remove(), 5000);
+        // ========== Idle status ==========
+
+        async function loadIdle() {
+            try {
+                var results = await Promise.all([API.analytics('station-counts'), API.hotList()]);
+                var counts = {};
+                results[0].forEach(function (r) { counts[r.station] = r.count; });
+                document.getElementById('stationTiles').innerHTML = U.STATIONS.map(function (s) {
+                    return '<div class="stat" data-station="' + s + '"><div class="stat-label">' + U.stationLabel(s) +
+                        '</div><div class="stat-value">' + U.number(counts[s] || 0) + '</div></div>';
+                }).join('');
+                var hot = results[1].slice(0, 3);
+                var list = document.getElementById('attentionList');
+                if (!hot.length) {
+                    list.innerHTML = U.emptyState('checkCircle', 'Nothing waiting on sharpening');
+                    return;
+                }
+                list.innerHTML = hot.map(function (j) {
+                    var flags = (j.has_blocked_position ? '<span class="flag">' + U.icon('alert') + 'Blocked</span>' : '') +
+                        (j.all_in_sharpen ? '<span class="flag flag-warning">All in sharpen</span>' : '');
+                    return '<button type="button" class="attention-item" data-s="' + U.esc(j.s_number) + '">' +
+                        '<div><div class="row">' + U.toolId(j.s_number) + U.priorityBadge(j.priority_level) + flags + '</div>' +
+                        '<div class="muted" style="font-size:0.88rem">' + (j.title ? U.esc(j.title) + ' · ' : '') + j.sharpen_count + ' in sharpen · ' +
+                        j.available_sets + ' set' + (j.available_sets === 1 ? '' : 's') + ' available</div></div>' +
+                        U.stackbar({ active: j.active_count, sharpen: j.sharpen_count, cabinet: j.cabinet_count, refill: j.refill_count }) +
+                        '</button>';
+                }).join('');
+                list.querySelectorAll('[data-s]').forEach(function (b) {
+                    b.addEventListener('click', function () { entryInput.value = b.dataset.s; lookup(b.dataset.s); });
+                });
+            } catch (err) {
+                document.getElementById('attentionList').innerHTML = U.inlineAlert(err.message, 'error');
+            }
         }
 
-        function showSuccess(message) {
-            const alertDiv = document.createElement('div');
-            alertDiv.className = 'alert alert-success';
-            alertDiv.textContent = message;
-            document.getElementById('alerts').innerHTML = '';
-            document.getElementById('alerts').appendChild(alertDiv);
-            setTimeout(() => alertDiv.remove(), 5000);
+        // ========== Recent activity ==========
+
+        var activityMoves = {};
+
+        async function loadActivity() {
+            var list = document.getElementById('activityList');
+            try {
+                var moves = await API.moves({ limit: 12 });
+                activityMoves = {};
+                if (!moves.length) {
+                    list.innerHTML = U.emptyState('clock', 'No moves yet', 'Moves recorded on any kiosk show up here.');
+                    return;
+                }
+                list.innerHTML = moves.map(function (m) {
+                    activityMoves[m.id] = m;
+                    return '<div class="activity-item' + (m.undone ? ' is-undone' : '') + '">' +
+                        U.stationBadge(m.to_station) +
+                        '<div class="what"><a href="#" data-move="' + m.id + '">' + U.toolId(m.s_number, m.set_no, m.cam_no) + '</a>' +
+                        '<div class="muted">' + (m.undone ? 'Undone · ' : m.from_station === 'new' ? 'Created · ' : 'from ' + U.esc(U.stationLabel(m.from_station)) + ' · ') + U.esc(m.operator || '') + '</div></div>' +
+                        '<span class="when" title="' + U.esc(U.formatDateTime(m.moved_at)) + '">' + U.timeAgo(m.moved_at) + '</span></div>';
+                }).join('');
+                list.querySelectorAll('[data-move]').forEach(function (a) {
+                    a.addEventListener('click', function (e) {
+                        e.preventDefault();
+                        var m = activityMoves[a.dataset.move];
+                        entryInput.value = m.s_number + '-' + m.set_no + '-' + m.cam_no;
+                        lookup(entryInput.value);
+                    });
+                });
+            } catch (err) {
+                list.innerHTML = U.inlineAlert(err.message, 'error');
+            }
         }
 
-        function showAlert(message, type) {
-            const alertDiv = document.createElement('div');
-            alertDiv.className = `alert alert-${type}`;
-            alertDiv.textContent = message;
-            document.getElementById('alerts').appendChild(alertDiv);
-            setTimeout(() => alertDiv.remove(), 5000);
-        }
+        // ========== Keyboard ==========
+
+        document.addEventListener('keydown', function (e) {
+            if (document.querySelector('dialog[open]') || document.querySelector('.login-overlay:not(.hidden)')) return;
+            if (e.key === 'Escape' && (state.cam || !pickerCard.classList.contains('hidden'))) {
+                resetUI();
+                return;
+            }
+            // Scan anytime: printable keys typed outside a field start a new lookup
+            var t = e.target;
+            var inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
+            if (!inField && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== ' ') {
+                if (state.cam || !pickerCard.classList.contains('hidden')) {
+                    pickerCard.classList.add('hidden');
+                    moveCard.classList.add('hidden');
+                    idlePanel.classList.remove('hidden');
+                    state.cam = null;
+                }
+                entryInput.value = '';
+                entryInput.focus();
+            }
+        });
+
+        Auth.onReady(function () {
+            loadActivity();
+            loadIdle();
+            var q = new URLSearchParams(location.search).get('q');
+            if (q) {
+                history.replaceState(null, '', location.pathname);
+                entryInput.value = q;
+                lookup(q);
+            } else {
+                entryInput.focus();
+            }
+        });
+        setInterval(function () { if (document.visibilityState === 'visible' && Session.isLoggedIn()) {
+            loadActivity();
+            if (!idlePanel.classList.contains('hidden')) loadIdle();
+        } }, 30000);
+    })();
     </script>
 </body>
 </html>
