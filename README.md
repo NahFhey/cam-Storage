@@ -16,10 +16,13 @@ The application maintains a complete audit log of all movements, computes priori
 
 ### Current Features:
 - ✅ Manual entry of tool identifiers (designed for keyboard-wedge input)
-- ✅ Touch-first UI with large buttons optimized for shop floor use
+- ✅ Touch-first UI with large buttons optimized for shop floor use, on-screen keypads for PIN and material entry
+- ✅ Scan anytime: typing anywhere on the Entry screen starts a new lookup (keyboard-wedge friendly)
+- ✅ Light and dark themes (follows the OS, toggle in the top bar)
+- ✅ Atomic whole-set moves (all cams move, or none do)
 - ✅ Station movement tracking with full audit trail
 - ✅ Optional auto-bump: moving to Active can automatically bump existing Active tool to Sharpen
-- ✅ Undo capability for correcting mistakes
+- ✅ Undo capability for correcting mistakes (from the move screen or straight from the confirmation toast)
 - ✅ Priority hot list computation based on available sets and refill counts
 - ✅ Analytics dashboards (moves, dwell times, cycle counts, sharpen backlog, refill forecast)
 - ✅ Search functionality by S-number, set, or cam
@@ -49,10 +52,12 @@ The application maintains a complete audit log of all movements, computes priori
 
 ### Priority Management:
 - Supervisors check **Hot List** to see urgent jobs
-- Priority increases when:
-  - Only 1 set available (+1)
-  - No sets available (+3)
-  - Tools in refill (+1 each)
+- Score = base priority (Low 0 … Top 4) plus:
+  - Every tool in Sharpen (+100)
+  - A cam position blocked: every copy in Sharpen or Refill (+100)
+  - No cabinet stock while a full set is active (+2)
+  - No sets available (+2), or only 1 set available (+1)
+  - 3 or more tools in Refill (+1)
 - Hot list updates in real-time as tools move
 
 ### Error Correction:
@@ -200,41 +205,41 @@ sudo systemctl start cam-tracking
 ## User Guide
 
 ### Entry Screen (Main)
-- Type or scan tool identifier: `S1793 SET1 CAM2`, `1793-1-2`, `S1793-C2-SET1`
+- Type or scan tool identifier: `S1793 SET1 CAM2`, `1793-1-2`, `S1793-C2-SET1`, or just `1793` for the whole job
 - System is permissive: ignores extra spaces, punctuation, case
-- If multiple tools match, selection list appears
-- After selection, move screen shows with 4 station buttons
+- Typing anywhere on the page jumps to the entry box, so a scan always starts a fresh lookup
+- If several tools match, tap a cam to move it or tap a set to move every cam in it
+- The move screen shows the current station, material life, and the last five moves; press **Esc** to cancel
+- Sharpen → Cabinet asks for material removed on an on-screen keypad (type thousandths: `12` = 0.012")
+- Moving a whole set collects every material reading first; cancelling leaves the set untouched
+- Every move shows a confirmation with an **Undo** button
+- While idle, the screen shows tools per station, the top of the hot list, and recent activity from every kiosk
 
 ### Hot List Screen
-- Shows all jobs sorted by priority (Urgent → Low)
-- Priority calculation:
-  - Base priority from job settings
-  - +1 if only 1 set available
-  - +3 if no sets available
-  - +1 for each tool in refill
-- Auto-refreshes every 30 seconds
-- Click "View" to see job details
+- Jobs with tools waiting in Sharpen, ranked by score (see "How ranking works" on the page)
+- Flags jobs with a **blocked** cam position or with **every tool in Sharpen**
+- Shows each job's station distribution and how many sets are ready
+- Columns are sortable; auto-refreshes every 30 seconds; tap a row for job details
 
 ### Search Screen
-- Search by S-number, job title, set, cam
-- Returns matching jobs and individual tools
-- Fast lookup for specific tools or jobs
+- Live search by S-number, job title, or any tool format
+- Tool results link straight to the move screen
+
+### Job Detail Screen
+- Tools per station, then every tool with sharpening history and material life used
 
 ### Analytics Screen
-- **Station Counts**: Current distribution of tools
-- **Recent Moves**: Activity over last 7 days
-- **Dwell Times**: Average hours tools spend in each station
-- **Sharpen Backlog**: How many tools waiting and average wait time
-- **Cycle Counts**: Most-used tools (moves into Active)
-- Auto-refreshes every 60 seconds
+- KPI tiles, station distribution with average dwell time
+- Moves per day and material removed per day (7 / 30 / 90 days)
+- Station transitions, operator activity, refill forecast, lifespan statistics
+- Most sharpened and most cycled tools
 
 ### Admin Screen (requires admin login)
-- **Configuration**: Toggle auto-bump, set default material life
-- **User Management**: Create, edit, deactivate users and assign roles
-- **Create Job**: Add new production jobs (S-numbers)
-- **Bulk Create CAM Items**: Generate sets and cams with die position configuration
-- **Export/Import Data**: Download CSV files, database backup, or restore from backup
-- **Jobs List**: View and manage all jobs in system
+- **Jobs**: create, edit, delete; change priority (a reason is recorded in the audit log)
+- **Tools**: add sets & cams with a live preview; edit die position, orientation, material life and notes (auto-saves)
+- **Top 5**: reorder by drag or ▲▼ buttons (touch friendly), swap jobs in, review priority history and escalation analytics
+- **Users**: add users, reset PINs, change roles, deactivate/reactivate
+- **Settings & data**: auto-bump, default material life, CSV exports, database backup and restore
 
 ## Data Model
 
@@ -300,7 +305,7 @@ The system accepts multiple formats:
 
 ## API Reference
 
-See `main.py` for full FastAPI documentation.
+Interactive documentation is served at `/docs` while the server is running. Endpoints live in `app/routers/`.
 
 ### Authentication:
 - `POST /api/auth/login` - Log in with PIN, returns Bearer token
@@ -317,6 +322,7 @@ See `main.py` for full FastAPI documentation.
 - `GET /api/jobs` - List jobs (paginated)
 - `POST /api/jobs` - Create job (admin)
 - `GET /api/jobs/{id}` - Get job with cam items
+- `GET /api/jobs/{id}/tool-stats` - Sharpening and lifespan stats for every tool in a job
 - `PATCH /api/jobs/{id}` - Update job (admin)
 - `DELETE /api/jobs/{id}` - Delete job (admin)
 - `GET /api/cam-items` - List cam items (filterable, paginated)
@@ -327,6 +333,7 @@ See `main.py` for full FastAPI documentation.
 
 ### Moves:
 - `POST /api/moves` - Move cam to station (requires login)
+- `POST /api/moves/set` - Move a whole set atomically; moving to Active bumps conflicting sets (requires login)
 - `POST /api/moves/batch` - Batch move up to 50 items (requires login)
 - `POST /api/moves/undo/{cam_item_id}` - Undo last move (requires login)
 - `GET /api/moves` - List recent moves
@@ -340,6 +347,8 @@ See `main.py` for full FastAPI documentation.
 - `GET /api/analytics/cycle-counts` - Cycle counts per tool
 - `GET /api/analytics/sharpen-backlog` - Sharpen backlog stats
 - `GET /api/analytics/refill-forecast` - Tools approaching refill
+- `GET /api/analytics/material-stats` - Most-sharpened tools with last/average material removed
+- `GET /api/analytics/station-transitions`, `operator-activity`, `lifespan-stats`, `material-trends`
 - `GET /api/cam-items/{id}/lifespan` - Lifespan forecast for a tool
 - `GET /api/cam-items/{id}/sharpen-stats` - Sharpen history stats
 - `GET /api/export/*` - CSV and database exports (requires login)
@@ -402,46 +411,52 @@ Database schema migrations are backward compatible in Phase 1.
 ### Project Structure:
 ```
 cam-tracking/
-├── main.py                  # FastAPI application (endpoints, auth, caching)
+├── main.py                  # Server entry point: builds the FastAPI app, mounts routers and static files
+├── app/
+│   ├── routers/             # API endpoints, grouped by area
+│   │   ├── auth.py          #   login/logout, users
+│   │   ├── jobs.py          #   jobs CRUD, per-job tool stats
+│   │   ├── cam_items.py     #   tools CRUD, bulk create, per-tool stats
+│   │   ├── moves.py         #   entry resolution, single/set/batch moves, undo
+│   │   ├── priority.py      #   hot list, Top 5, priority audit log
+│   │   ├── analytics.py     #   search and analytics
+│   │   └── system.py        #   health, config, CSV exports, backup/restore
+│   ├── schemas.py           # Request models and validation
+│   ├── deps.py              # Sessions and auth dependencies
+│   ├── utils.py             # Query, update, audit and CSV helpers
+│   ├── cache.py             # TTL cache
+│   └── limiter.py           # Rate limiter
+├── business_logic.py        # Moves, set moves, undo, priority ranking, lifespan tracking
+├── entry_parser.py          # Manual entry parsing and resolution
 ├── database.py              # Schema, migrations, connection pooling
 ├── config.py                # Configuration settings
-├── entry_parser.py          # Manual entry parsing logic
-├── business_logic.py        # Move operations, priority, lifespan tracking
 ├── seed_data.py             # Test data generator
-├── requirements.txt         # Python dependencies
-├── start_kiosk.sh          # Startup script for Pi
-├── README.md               # This file
-├── TESTING.md              # Test guide
-├── QUICKSTART.md           # Quick start guide
-├── tests/                  # Test suite (82 tests)
-│   ├── conftest.py         # Shared fixtures
-│   ├── test_entry_parser.py
-│   ├── test_database.py
-│   └── test_api.py
-└── static/                 # Frontend
-    ├── css/
-    │   └── styles.css
+├── tests/                   # Test suite
+└── static/                  # Frontend (no build step, works offline)
+    ├── css/styles.css       # Design system: tokens, light/dark themes, components
     ├── js/
-    │   └── api.js
-    ├── index.html          # Entry/Move screen
-    ├── hot-list.html       # Priority queue
-    ├── search.html         # Search interface
-    ├── job-detail.html     # Job details
-    ├── analytics.html      # Dashboards
-    └── admin.html          # Admin tools
+    │   ├── ui.js            # Escaping, formatting, icons, toasts, dialogs, keypad, sortable tables
+    │   ├── api.js           # API client and session storage
+    │   ├── layout.js        # Top bar, navigation, theme toggle
+    │   └── auth.js          # PIN login, session checks, inactivity logout
+    ├── index.html           # Entry/Move screen
+    ├── hot-list.html        # Priority queue
+    ├── search.html          # Search
+    ├── job-detail.html      # Job details
+    ├── analytics.html       # Dashboards
+    └── admin.html           # Admin tools
 ```
 
 ### Running Tests:
 ```bash
-# Run all 82 tests
 pytest tests/ -v
 
 # See TESTING.md for detailed test guide
 ```
 
 ### Adding New Features:
-1. Backend: Add endpoints in `main.py`
-2. Frontend: Create/modify HTML files in `static/`
+1. Backend: Add endpoints to the matching router in `app/routers/` (new routers are registered in `main.py`)
+2. Frontend: Create/modify HTML files in `static/`; reuse helpers from `static/js/ui.js` and escape user data with `UI.esc`
 3. Business logic: Extend `business_logic.py`
 4. Database: Update schema in `database.py` (add migrations if needed)
 
@@ -455,5 +470,5 @@ For issues or questions, contact the engineering team.
 
 ---
 
-**Version**: Phase 1 (v1.2)
-**Last Updated**: 2026-02-14
+**Version**: 2.0.0
+**Last Updated**: 2026-10-03

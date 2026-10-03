@@ -3,564 +3,281 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CAM Tracking - Analytics</title>
+    <title>Analytics · CAM Tracking</title>
     <link rel="stylesheet" href="/static/css/styles.css">
-    <style>
-        .sortable-col { cursor: pointer; user-select: none; }
-        .sortable-col:hover { background: rgba(0,0,0,0.05); }
-        .sortable-col.active-sort { color: var(--primary-color, #3b82f6); }
-        .sort-arrow { font-size: 0.7rem; margin-left: 0.25rem; }
-    </style>
+    <script src="/static/js/ui.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/layout.js"></script>
 </head>
-<body>
-    <nav>
-        <h1>CAM Tracking Kiosk</h1>
-        <div class="nav-links">
-            <a href="/static/index.html">Entry</a>
-            <a href="/static/hot-list.html">Hot List</a>
-            <a href="/static/search.html">Search</a>
-            <a href="/static/analytics.html" class="active">Analytics</a>
-            <a href="/static/admin.html">Admin</a>
+<body data-page="analytics">
+    <main class="page">
+        <div class="page-header">
+            <div>
+                <h1>Analytics</h1>
+                <p>Tool flow, sharpening workload and material life across the shop.</p>
+            </div>
+            <div class="page-actions">
+                <div class="segmented" role="group" aria-label="Time period" id="periodPicker">
+                    <button type="button" data-days="7" aria-pressed="false">7 days</button>
+                    <button type="button" data-days="30" aria-pressed="true">30 days</button>
+                    <button type="button" data-days="90" aria-pressed="false">90 days</button>
+                </div>
+                <button type="button" class="btn" id="refreshBtn"></button>
+            </div>
         </div>
-    </nav>
 
-    <div class="container">
+        <div class="grid grid-4" id="kpis" style="margin-bottom:1rem"></div>
+
         <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h2 class="card-header" style="margin-bottom: 0;">Analytics Dashboard</h2>
-                <button id="refreshBtn" class="btn btn-primary">Refresh</button>
+            <div class="card-header">
+                <div>
+                    <div class="card-title">Where the tools are</div>
+                    <div class="card-subtitle">Current station and average time spent there.</div>
+                </div>
             </div>
+            <div id="stationDist"></div>
+        </div>
 
-            <div id="loading" class="spinner"></div>
-
-            <!-- Station Counts -->
-            <div id="stationCountsSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Tools by Station</h3>
-                <div id="stationCounts" class="grid grid-4"></div>
+        <div class="grid grid-2" style="margin-top:1rem">
+            <div class="card" style="margin:0">
+                <div class="card-header"><div><div class="card-title">Moves per day</div><div class="card-subtitle period-label"></div></div></div>
+                <div id="movesChart"></div>
             </div>
-
-            <!-- Recent Moves -->
-            <div id="recentMovesSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Moves Last 7 Days</h3>
-                <div id="recentMoves"></div>
+            <div class="card" style="margin:0">
+                <div class="card-header"><div><div class="card-title">Material removed per day</div><div class="card-subtitle period-label"></div></div></div>
+                <div id="materialChart"></div>
             </div>
+        </div>
 
-            <!-- Dwell Times -->
-            <div id="dwellTimesSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Average Dwell Time by Station</h3>
-                <div id="dwellTimes"></div>
+        <div class="grid grid-2" style="margin-top:1rem">
+            <div class="card" style="margin:0">
+                <div class="card-header"><div><div class="card-title">Station transitions</div><div class="card-subtitle period-label"></div></div></div>
+                <div id="transitions"></div>
             </div>
-
-            <!-- Sharpen Backlog -->
-            <div id="sharpenBacklogSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Sharpen Backlog</h3>
-                <div id="sharpenBacklog" class="grid grid-2"></div>
+            <div class="card" style="margin:0">
+                <div class="card-header"><div><div class="card-title">Operator activity</div><div class="card-subtitle period-label"></div></div></div>
+                <div id="operators"></div>
             </div>
+        </div>
 
-            <!-- Cycle Counts -->
-            <div id="cycleCountsSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Top 20 Tools by Cycle Count</h3>
-                <div id="cycleCounts"></div>
+        <div class="card" style="margin-top:1rem">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">Refill forecast</div>
+                    <div class="card-subtitle">Tools closest to the end of their material life.</div>
+                </div>
             </div>
+            <div id="forecast"></div>
+        </div>
 
-            <!-- Material Removal Stats -->
-            <div id="materialStatsSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Material Removal Statistics</h3>
+        <div class="card">
+            <div class="card-header"><div class="card-title">Tool lifespans</div></div>
+            <div id="lifespans"></div>
+        </div>
+
+        <div class="grid grid-2" style="margin-top:1rem">
+            <div class="card" style="margin:0">
+                <div class="card-header"><div><div class="card-title">Most sharpened tools</div><div class="card-subtitle">All time</div></div></div>
                 <div id="materialStats"></div>
             </div>
-
-            <!-- Refill Forecast -->
-            <div id="refillForecastSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Refill Forecast (Tools Approaching End of Life)</h3>
-                <div id="refillForecast"></div>
-            </div>
-
-            <!-- Station Transitions -->
-            <div id="stationTransitionsSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Station Transitions (Last 30 Days)</h3>
-                <div id="stationTransitions"></div>
-            </div>
-
-            <!-- Operator Activity -->
-            <div id="operatorActivitySection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Operator Activity (Last 30 Days)</h3>
-                <div id="operatorActivity"></div>
-            </div>
-
-            <!-- Tool Lifespan Stats -->
-            <div id="lifespanStatsSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Tool Lifespan Statistics</h3>
-                <div id="lifespanStats"></div>
-            </div>
-
-            <!-- Material Trends -->
-            <div id="materialTrendsSection" class="hidden">
-                <h3 style="margin: 2rem 0 1rem;">Material Removal Trends (Last 30 Days)</h3>
-                <div id="materialTrends"></div>
+            <div class="card" style="margin:0">
+                <div class="card-header"><div><div class="card-title">Most cycled tools</div><div class="card-subtitle">Moves into Active, all time</div></div></div>
+                <div id="cycles"></div>
             </div>
         </div>
-    </div>
+    </main>
 
-    <script src="/static/js/api.js"></script>
     <script src="/static/js/auth.js"></script>
     <script>
-        // Reusable sortable table helper
-        // tableId: id of the <table>, dataKey: window[dataKey] holds row data,
-        // columns: [{key, label, render(row)}], defaultSort: key, defaultAsc: bool
-        function makeSortableTable(tableId, dataKey, columns, defaultSort, defaultAsc) {
-            const state = { key: defaultSort, asc: defaultAsc };
+    (function () {
+        'use strict';
+        var U = UI;
+        var days = 30;
+        var refreshBtn = document.getElementById('refreshBtn');
+        refreshBtn.innerHTML = U.icon('refresh') + 'Refresh';
 
-            function render() {
-                const data = window[dataKey];
-                if (!data || !data.length) return;
-                const dir = state.asc ? 1 : -1;
-                data.sort((a, b) => {
-                    const av = typeof a[state.key] === 'string' ? a[state.key].toLowerCase() : (a[state.key] || 0);
-                    const bv = typeof b[state.key] === 'string' ? b[state.key].toLowerCase() : (b[state.key] || 0);
-                    if (av < bv) return -1 * dir;
-                    if (av > bv) return 1 * dir;
-                    return 0;
-                });
-                const table = document.getElementById(tableId);
-                if (!table) return;
-                const thead = table.querySelector('thead tr');
-                thead.innerHTML = columns.map(col => {
-                    const isSorted = state.key === col.key;
-                    const sortable = col.key ? 'sortable-col' + (isSorted ? ' active-sort' : '') : '';
-                    const arrow = isSorted ? (state.asc ? '<span class="sort-arrow">&#9650;</span>' : '<span class="sort-arrow">&#9660;</span>') : '';
-                    return '<th class="' + sortable + '"' + (col.key ? ' data-sort="' + col.key + '"' : '') + '>' + col.label + arrow + '</th>';
-                }).join('');
-                table.querySelector('tbody').innerHTML = data.map(row => '<tr>' + columns.map(col => col.render(row)).join('') + '</tr>').join('');
-                // Bind click handlers
-                thead.querySelectorAll('.sortable-col').forEach(th => {
-                    th.addEventListener('click', () => {
-                        if (state.key === th.dataset.sort) { state.asc = !state.asc; }
-                        else { state.key = th.dataset.sort; state.asc = false; }
-                        render();
-                    });
-                });
-            }
-            return render;
+        // ========== Chart builders ==========
+
+        /** Last n calendar days (UTC, matching SQLite DATE()) as YYYY-MM-DD. */
+        function dayKeys(n) {
+            var keys = [];
+            for (var i = n - 1; i >= 0; i--) keys.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+            return keys;
         }
 
-        const loading = document.getElementById('loading');
-        const refreshBtn = document.getElementById('refreshBtn');
-
-        refreshBtn.addEventListener('click', loadAnalytics);
-
-        async function loadAnalytics() {
-            loading.classList.remove('hidden');
-            refreshBtn.disabled = true;
-
-            try {
-                await Promise.all([
-                    loadStationCounts(),
-                    loadRecentMoves(),
-                    loadDwellTimes(),
-                    loadSharpenBacklog(),
-                    loadCycleCounts(),
-                    loadMaterialStats(),
-                    loadRefillForecast(),
-                    loadStationTransitions(),
-                    loadOperatorActivity(),
-                    loadLifespanStats(),
-                    loadMaterialTrends()
-                ]);
-            } catch (error) {
-                showError(error.message);
-            } finally {
-                loading.classList.add('hidden');
-                refreshBtn.disabled = false;
-            }
+        /** Single-series column chart. points: [{label, value, tip}] */
+        function columnChart(points, format) {
+            var max = Math.max.apply(null, points.map(function (p) { return p.value; }).concat([0]));
+            if (!max) return U.emptyState('chart', 'No activity in this period');
+            var maxIdx = points.map(function (p) { return p.value; }).indexOf(max);
+            var gap = points.length > 40 ? 2 : points.length > 14 ? 4 : 6;
+            var every = Math.ceil(points.length / 8);
+            return '<div class="colchart"><div class="colchart-plot" style="gap:' + gap + 'px">' + points.map(function (p, i) {
+                var showCap = i === maxIdx || (i === points.length - 1 && p.value);
+                return '<div class="colchart-col" tabindex="0" data-tip="' + U.esc(p.tip) + '">' +
+                    (showCap ? '<span class="cap" style="bottom:' + (p.value / max * 100) + '%">' + format(p.value) + '</span>' : '') +
+                    '<div class="bar" style="height:' + (p.value / max * 100) + '%' + (p.value ? '' : ';min-height:0') + '"></div></div>';
+            }).join('') + '</div><div class="colchart-axis" style="gap:' + gap + 'px">' + points.map(function (p, i) {
+                return '<span>' + ((points.length - 1 - i) % every === 0 ? '<em>' + U.esc(p.label) + '</em>' : '') + '</span>';
+            }).join('') + '</div></div>';
         }
 
-        async function loadStationCounts() {
-            const data = await getStationCounts();
-            const container = document.getElementById('stationCounts');
-
-            const html = data.map(item => `
-                <div class="stat-card">
-                    <div class="stat-value">${item.count}</div>
-                    <div class="stat-label">${formatStation(item.station)}</div>
-                </div>
-            `).join('');
-
-            container.innerHTML = html;
-            document.getElementById('stationCountsSection').classList.remove('hidden');
+        function hbars(rows) {
+            var max = Math.max.apply(null, rows.map(function (r) { return r.value; }).concat([0]));
+            if (!max) return U.emptyState('chart', 'No moves in this period');
+            return '<div class="hbars">' + rows.map(function (r) {
+                return '<div class="hbar"><span>' + r.label + '</span><div class="hbar-track">' +
+                    '<div class="hbar-fill" style="width:' + (r.value / max * 100) + '%"></div></div>' +
+                    '<span class="hbar-value">' + U.number(r.value) + '</span></div>';
+            }).join('') + '</div>';
         }
 
-        async function loadRecentMoves() {
-            const data = await getRecentMoves(7);
-            const container = document.getElementById('recentMoves');
-
-            if (data.length === 0) {
-                container.innerHTML = '<p class="text-center">No moves in the last 7 days</p>';
-            } else {
-                const html = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Date</th>
-                                <th>Move Count</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${data.map(item => `
-                                <tr>
-                                    <td>${formatDate(item.date)}</td>
-                                    <td>${item.count}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                `;
-                container.innerHTML = html;
-            }
-
-            document.getElementById('recentMovesSection').classList.remove('hidden');
+        function stat(label, value, sub, station) {
+            return '<div class="stat"' + (station ? ' data-station="' + station + '"' : '') + '><div class="stat-label">' + label +
+                '</div><div class="stat-value">' + value + '</div>' + (sub ? '<div class="stat-sub">' + sub + '</div>' : '') + '</div>';
         }
 
-        async function loadDwellTimes() {
-            const data = await getDwellTimes();
-            const container = document.getElementById('dwellTimes');
-
-            const html = `
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Station</th>
-                            <th>Average Hours</th>
-                            <th>Tool Count</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${data.map(item => `
-                            <tr>
-                                <td>${formatStation(item.station)}</td>
-                                <td>${item.avg_hours ? item.avg_hours.toFixed(1) : 'N/A'}</td>
-                                <td>${item.count}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            `;
-
-            container.innerHTML = html;
-            document.getElementById('dwellTimesSection').classList.remove('hidden');
+        function section(id, fn) {
+            return fn().catch(function (err) {
+                document.getElementById(id).innerHTML = U.inlineAlert(err.message, 'error');
+            });
         }
 
-        async function loadSharpenBacklog() {
-            const data = await getSharpenBacklog();
-            const container = document.getElementById('sharpenBacklog');
+        // ========== Sections ==========
 
-            const html = `
-                <div class="stat-card">
-                    <div class="stat-value">${data.backlog_size || 0}</div>
-                    <div class="stat-label">Tools in Sharpen</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">${data.avg_hours_in_sharpen ? data.avg_hours_in_sharpen.toFixed(1) : 'N/A'}</div>
-                    <div class="stat-label">Avg Hours in Sharpen</div>
-                </div>
-            `;
+        async function loadOverview() {
+            var r = await Promise.all([
+                API.analytics('station-counts'), API.analytics('dwell-times'),
+                API.analytics('sharpen-backlog'), API.analytics('lifespan-stats'),
+                API.analytics('moves-recent', { days: days })
+            ]);
+            var counts = {}, dwell = {};
+            r[0].forEach(function (x) { counts[x.station] = x.count; });
+            r[1].forEach(function (x) { dwell[x.station] = x.avg_hours; });
+            var total = U.STATIONS.reduce(function (n, s) { return n + (counts[s] || 0); }, 0);
+            var backlog = r[2], life = r[3];
+            var moves = r[4].reduce(function (n, x) { return n + x.count; }, 0);
 
-            container.innerHTML = html;
-            document.getElementById('sharpenBacklogSection').classList.remove('hidden');
+            document.getElementById('kpis').innerHTML =
+                stat('Tools tracked', U.number(total)) +
+                stat('Moves', U.number(moves), 'Last ' + days + ' days') +
+                stat('Sharpen backlog', U.number(backlog.backlog_size || 0), 'Waiting ' + U.hoursLabel(backlog.avg_hours_in_sharpen) + ' on average', 'sharpen') +
+                stat('Avg life used', life.active.avg_percent_used !== null ? U.number(life.active.avg_percent_used) + '%' : '—', 'Across current lifespans');
+
+            document.getElementById('stationDist').innerHTML = total
+                ? U.stackbar(counts, true) + '<div class="grid grid-4" style="margin-top:1rem">' + U.STATIONS.map(function (s) {
+                    var n = counts[s] || 0;
+                    return stat(U.stationLabel(s), U.number(n),
+                        Math.round(n / total * 100) + '% · avg ' + U.hoursLabel(dwell[s]) + ' here', s);
+                }).join('') + '</div>'
+                : U.emptyState('tool', 'No tools tracked yet');
+
+            var c = life.completed, a = life.active;
+            document.getElementById('lifespans').innerHTML =
+                '<div class="section-title" style="margin-top:0">Completed (refilled)</div><div class="grid grid-4">' +
+                stat('Lifespans', U.number(c.completed_lifespans || 0)) +
+                stat('Avg sharpenings', c.avg_sharpenings !== null ? U.number(c.avg_sharpenings, 1) : '—',
+                    c.completed_lifespans ? 'Range ' + c.min_sharpenings + '–' + c.max_sharpenings : '') +
+                stat('Avg material removed', U.inches(c.avg_material_removed)) +
+                stat('Avg duration', U.hoursLabel(c.avg_lifespan_hours)) +
+                '</div><div class="section-title">In progress</div><div class="grid grid-4">' +
+                stat('Lifespans', U.number(a.active_lifespans || 0)) +
+                stat('Avg sharpenings', a.avg_sharpenings !== null ? U.number(a.avg_sharpenings, 1) : '—') +
+                stat('Avg material removed', U.inches(a.avg_material_removed)) +
+                stat('Avg life used', a.avg_percent_used !== null ? U.number(a.avg_percent_used) + '%' : '—') +
+                '</div>';
         }
 
-        const renderCycleTable = makeSortableTable('cycleTable', '_cycleData', [
-            { key: 's_number', label: 'Tool', render: r => '<td>S' + r.s_number + ' Set' + r.set_no + ' Cam' + r.cam_no + '</td>' },
-            { key: 'cycle_count', label: 'Cycles (Active Moves)', render: r => '<td>' + r.cycle_count + '</td>' }
-        ], 'cycle_count', false);
-
-        async function loadCycleCounts() {
-            const data = await getCycleCounts(20);
-            const container = document.getElementById('cycleCounts');
-
-            if (data.length === 0) {
-                container.innerHTML = '<p class="text-center">No cycle data available</p>';
-            } else {
-                window._cycleData = data;
-                container.innerHTML = '<table class="table" id="cycleTable"><thead><tr></tr></thead><tbody></tbody></table>';
-                renderCycleTable();
-            }
-
-            document.getElementById('cycleCountsSection').classList.remove('hidden');
+        async function loadTrends() {
+            var trends = await API.analytics('material-trends', { days: days });
+            var byDay = {};
+            trends.forEach(function (t) { byDay[t.date] = t; });
+            var keys = dayKeys(days);
+            var movePoints = keys.map(function (k) {
+                var t = byDay[k] || { move_count: 0 };
+                return { label: U.formatDay(k), value: t.move_count, tip: '<strong>' + U.formatDay(k) + '</strong><br>' + t.move_count + ' moves' };
+            });
+            var materialPoints = keys.map(function (k) {
+                var t = byDay[k] || { total_material_removed: 0, sharpen_count: 0 };
+                return { label: U.formatDay(k), value: t.total_material_removed,
+                    tip: '<strong>' + U.formatDay(k) + '</strong><br>' + U.inches(t.total_material_removed) + ' removed<br>' + t.sharpen_count + ' sharpenings' };
+            });
+            var movesEl = document.getElementById('movesChart');
+            var matEl = document.getElementById('materialChart');
+            movesEl.innerHTML = columnChart(movePoints, function (v) { return U.number(v); });
+            matEl.innerHTML = columnChart(materialPoints, function (v) { return U.inches(v); });
+            U.bindChartTips(movesEl);
+            U.bindChartTips(matEl);
         }
 
-        async function loadMaterialStats() {
-            // Get all jobs and their CAM items
-            const jobs = await getJobs();
-            const allStats = [];
-
-            for (const job of jobs) {
-                const data = await getJob(job.id);
-                for (const cam of data.cam_items) {
-                    try {
-                        const stats = await fetch(`/api/cam-items/${cam.id}/sharpen-stats`).then(r => r.json());
-                        if (stats.sharpen_count > 0) {
-                            allStats.push({
-                                s_number: job.s_number,
-                                set_no: cam.set_no,
-                                cam_no: cam.cam_no,
-                                sharpen_count: stats.sharpen_count,
-                                last_removed: stats.last_material_removed,
-                                avg_removed: stats.avg_material_removed
-                            });
-                        }
-                    } catch (error) {
-                        console.error(`Failed to load stats for cam ${cam.id}:`, error);
-                    }
-                }
-            }
-
-            // Sort by sharpen count descending
-            allStats.sort((a, b) => b.sharpen_count - a.sharpen_count);
-
-            const container = document.getElementById('materialStats');
-            if (allStats.length === 0) {
-                container.innerHTML = '<p class="text-center">No sharpening data available yet.</p>';
-            } else {
-                const html = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Tool</th>
-                                <th>Sharpen Count</th>
-                                <th>Last Removed</th>
-                                <th>Avg Removed</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${allStats.slice(0, 20).map(item => `
-                                <tr>
-                                    <td>S${item.s_number} Set${item.set_no} Cam${item.cam_no}</td>
-                                    <td>${item.sharpen_count}</td>
-                                    <td>${item.last_removed ? item.last_removed.toFixed(3) + '"' : '-'}</td>
-                                    <td>${item.avg_removed ? item.avg_removed.toFixed(3) + '"' : '-'}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                `;
-                container.innerHTML = html;
-            }
-
-            document.getElementById('materialStatsSection').classList.remove('hidden');
+        async function loadTransitions() {
+            var data = await API.analytics('station-transitions', { days: days });
+            document.getElementById('transitions').innerHTML = hbars(data.filter(function (t) { return t.from_station !== 'new'; }).slice(0, 8).map(function (t) {
+                return { label: U.esc(U.stationLabel(t.from_station)) + ' <span class="arrow">→</span> ' + U.esc(U.stationLabel(t.to_station)), value: t.count };
+            }));
         }
 
-        async function loadRefillForecast() {
-            const data = await getRefillForecast(30);
-            const container = document.getElementById('refillForecast');
-
-            if (data.length === 0) {
-                container.innerHTML = '<p class="text-center">No active lifespan data available yet.</p>';
-            } else {
-                const html = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Tool</th>
-                                <th>Station</th>
-                                <th>Sharpenings</th>
-                                <th>Total Removed</th>
-                                <th>Remaining</th>
-                                <th>Life Used</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${data.map(item => {
-                                const pct = item.percent_used || 0;
-                                const barColor = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#16a34a';
-                                const rowBg = pct >= 90 ? 'background: #fef2f2;' : pct >= 70 ? 'background: #fffbeb;' : '';
-                                return `
-                                <tr style="${rowBg}">
-                                    <td>S${item.s_number} Set${item.set_no} Cam${item.cam_no}</td>
-                                    <td><span class="badge ${getStationBadgeClass(item.status_station)}">${formatStation(item.status_station)}</span></td>
-                                    <td>${item.sharpen_count}</td>
-                                    <td>${item.total_material_removed.toFixed(3)}"</td>
-                                    <td>${item.material_remaining.toFixed(3)}"</td>
-                                    <td>
-                                        <div style="display:flex; align-items:center; gap:0.5rem; min-width:120px;">
-                                            <div style="flex:1; height:10px; background:#e2e8f0; border-radius:4px; overflow:hidden;">
-                                                <div style="width:${Math.min(pct, 100)}%; height:100%; background:${barColor}; border-radius:4px;"></div>
-                                            </div>
-                                            <span style="font-size:0.85rem; min-width:3rem; font-weight:600;">${pct.toFixed(0)}%</span>
-                                        </div>
-                                    </td>
-                                </tr>`;
-                            }).join('')}
-                        </tbody>
-                    </table>
-                `;
-                container.innerHTML = html;
-            }
-
-            document.getElementById('refillForecastSection').classList.remove('hidden');
+        async function loadOperators() {
+            var data = await API.analytics('operator-activity', { days: days });
+            U.sortableTable(document.getElementById('operators'), [
+                { key: 'operator', label: 'Operator', render: function (r) { return '<strong>' + U.esc(r.operator) + '</strong>'; } },
+                { key: 'move_count', label: 'Moves', className: 'num', render: function (r) { return U.number(r.move_count); } },
+                { key: 'sharpen_moves', label: 'Sharpenings', className: 'num', render: function (r) { return U.number(r.sharpen_moves); } },
+                { key: 'total_material_removed', label: 'Removed', className: 'num', render: function (r) { return U.inches(r.total_material_removed); } }
+            ], { rows: data, sortKey: 'move_count', empty: U.emptyState('users', 'No moves in this period') });
         }
 
-        const renderTransitionsTable = makeSortableTable('transitionsTable', '_transitionsData', [
-            { key: 'from_station', label: 'From', render: r => '<td><span class="badge ' + getStationBadgeClass(r.from_station) + '">' + formatStation(r.from_station) + '</span></td>' },
-            { key: 'to_station', label: 'To', render: r => '<td><span class="badge ' + getStationBadgeClass(r.to_station) + '">' + formatStation(r.to_station) + '</span></td>' },
-            { key: 'count', label: 'Count', render: r => '<td>' + r.count + '</td>' }
-        ], 'count', false);
-
-        async function loadStationTransitions() {
-            const data = await getStationTransitions(30);
-            const container = document.getElementById('stationTransitions');
-
-            if (data.length === 0) {
-                container.innerHTML = '<p class="text-center">No transition data available</p>';
-            } else {
-                window._transitionsData = data;
-                container.innerHTML = '<table class="table" id="transitionsTable"><thead><tr></tr></thead><tbody></tbody></table>';
-                renderTransitionsTable();
-            }
-
-            document.getElementById('stationTransitionsSection').classList.remove('hidden');
+        async function loadForecast() {
+            var data = await API.analytics('refill-forecast', { limit: 15 });
+            U.sortableTable(document.getElementById('forecast'), [
+                { key: 's_number', label: 'Tool', render: function (r) { return '<a href="/static/job-detail.html?id=' + r.job_id + '">' + U.toolId(r.s_number, r.set_no, r.cam_no) + '</a>'; } },
+                { key: 'status_station', label: 'Station', render: function (r) { return U.stationBadge(r.status_station); } },
+                { key: 'sharpen_count', label: 'Sharpenings', className: 'num', render: function (r) { return r.sharpen_count; } },
+                { key: 'total_material_removed', label: 'Removed', className: 'num', render: function (r) { return U.inches(r.total_material_removed); } },
+                { key: 'material_remaining', label: 'Remaining', className: 'num', render: function (r) { return U.inches(r.material_remaining); } },
+                { key: 'percent_used', label: 'Life used', render: function (r) { return U.meter(r.percent_used); } }
+            ], {
+                rows: data, sortKey: 'percent_used',
+                rowAttrs: function (r) { return r.percent_used >= 90 ? 'class="row-danger"' : r.percent_used >= 70 ? 'class="row-warn"' : ''; },
+                empty: U.emptyState('refill', 'No sharpening recorded yet', 'Tools appear here once they have been sharpened.')
+            });
         }
 
-        const renderOperatorTable = makeSortableTable('operatorTable', '_operatorData', [
-            { key: 'operator', label: 'Operator', render: r => '<td><strong>' + r.operator + '</strong></td>' },
-            { key: 'move_count', label: 'Total Moves', render: r => '<td>' + r.move_count + '</td>' },
-            { key: 'sharpen_moves', label: 'Sharpen Moves', render: r => '<td>' + r.sharpen_moves + '</td>' },
-            { key: 'total_material_removed', label: 'Material Removed', render: r => '<td>' + (r.total_material_removed ? r.total_material_removed.toFixed(3) + '"' : '-') + '</td>' }
-        ], 'move_count', false);
-
-        async function loadOperatorActivity() {
-            const data = await getOperatorActivity(30);
-            const container = document.getElementById('operatorActivity');
-
-            if (data.length === 0) {
-                container.innerHTML = '<p class="text-center">No operator data available</p>';
-            } else {
-                window._operatorData = data;
-                container.innerHTML = '<table class="table" id="operatorTable"><thead><tr></tr></thead><tbody></tbody></table>';
-                renderOperatorTable();
-            }
-
-            document.getElementById('operatorActivitySection').classList.remove('hidden');
+        async function loadToolTables() {
+            var r = await Promise.all([API.analytics('material-stats', { limit: 15 }), API.analytics('cycle-counts', { limit: 15 })]);
+            U.sortableTable(document.getElementById('materialStats'), [
+                { key: 's_number', label: 'Tool', render: function (x) { return U.toolId(x.s_number, x.set_no, x.cam_no); } },
+                { key: 'sharpen_count', label: 'Count', className: 'num', render: function (x) { return x.sharpen_count; } },
+                { key: 'last_material_removed', label: 'Last', className: 'num', render: function (x) { return U.inches(x.last_material_removed); } },
+                { key: 'avg_material_removed', label: 'Average', className: 'num', render: function (x) { return U.inches(x.avg_material_removed); } }
+            ], { rows: r[0], sortKey: 'sharpen_count', empty: U.emptyState('sharpen', 'No sharpening recorded yet') });
+            U.sortableTable(document.getElementById('cycles'), [
+                { key: 's_number', label: 'Tool', render: function (x) { return U.toolId(x.s_number, x.set_no, x.cam_no); } },
+                { key: 'cycle_count', label: 'Cycles', className: 'num', render: function (x) { return x.cycle_count; } }
+            ], { rows: r[1].filter(function (x) { return x.cycle_count > 0; }), sortKey: 'cycle_count', empty: U.emptyState('play', 'No tools have been active yet') });
         }
 
-        async function loadLifespanStats() {
-            const data = await getLifespanStats();
-            const container = document.getElementById('lifespanStats');
-
-            const c = data.completed;
-            const a = data.active;
-
-            const html = `
-                <div class="grid grid-2" style="margin-bottom: 1.5rem;">
-                    <div>
-                        <h4 style="margin: 0 0 0.75rem; color: var(--text-light, #666);">Completed Lifespans</h4>
-                        <div class="grid grid-2">
-                            <div class="stat-card">
-                                <div class="stat-value">${c.completed_lifespans || 0}</div>
-                                <div class="stat-label">Total</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value">${c.avg_sharpenings ? c.avg_sharpenings.toFixed(1) : 'N/A'}</div>
-                                <div class="stat-label">Avg Sharpenings</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value">${c.avg_material_removed ? c.avg_material_removed.toFixed(3) + '"' : 'N/A'}</div>
-                                <div class="stat-label">Avg Material Removed</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value">${c.avg_lifespan_hours ? c.avg_lifespan_hours.toFixed(0) + 'h' : 'N/A'}</div>
-                                <div class="stat-label">Avg Lifespan</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div>
-                        <h4 style="margin: 0 0 0.75rem; color: var(--text-light, #666);">Active Lifespans</h4>
-                        <div class="grid grid-2">
-                            <div class="stat-card">
-                                <div class="stat-value">${a.active_lifespans || 0}</div>
-                                <div class="stat-label">Total</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value">${a.avg_sharpenings ? a.avg_sharpenings.toFixed(1) : 'N/A'}</div>
-                                <div class="stat-label">Avg Sharpenings</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value">${a.avg_material_removed ? a.avg_material_removed.toFixed(3) + '"' : 'N/A'}</div>
-                                <div class="stat-label">Avg Material Removed</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value">${a.avg_percent_used ? a.avg_percent_used.toFixed(0) + '%' : 'N/A'}</div>
-                                <div class="stat-label">Avg Life Used</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            container.innerHTML = html;
-            document.getElementById('lifespanStatsSection').classList.remove('hidden');
+        async function loadAll() {
+            U.setLoading(refreshBtn, true);
+            document.querySelectorAll('.period-label').forEach(function (el) { el.textContent = 'Last ' + days + ' days'; });
+            await Promise.all([
+                section('kpis', loadOverview), section('movesChart', loadTrends), section('transitions', loadTransitions),
+                section('operators', loadOperators), section('forecast', loadForecast), section('materialStats', loadToolTables)
+            ]);
+            U.setLoading(refreshBtn, false);
         }
 
-        async function loadMaterialTrends() {
-            const data = await getMaterialTrends(30);
-            const container = document.getElementById('materialTrends');
-
-            if (data.length === 0) {
-                container.innerHTML = '<p class="text-center">No data available for this period</p>';
-            } else {
-                const maxMoves = Math.max(...data.map(d => d.move_count));
-                const html = `
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Date</th>
-                                <th>Moves</th>
-                                <th>Sharpen Moves</th>
-                                <th>Material Removed</th>
-                                <th style="width: 30%;">Activity</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${data.map(item => {
-                                const pct = maxMoves > 0 ? (item.move_count / maxMoves * 100) : 0;
-                                return `
-                                <tr>
-                                    <td>${formatDate(item.date)}</td>
-                                    <td>${item.move_count}</td>
-                                    <td>${item.sharpen_count}</td>
-                                    <td>${item.total_material_removed ? item.total_material_removed.toFixed(3) + '"' : '-'}</td>
-                                    <td>
-                                        <div style="height:10px; background:#e2e8f0; border-radius:4px; overflow:hidden;">
-                                            <div style="width:${pct}%; height:100%; background:var(--primary-color, #3b82f6); border-radius:4px;"></div>
-                                        </div>
-                                    </td>
-                                </tr>`;
-                            }).join('')}
-                        </tbody>
-                    </table>
-                `;
-                container.innerHTML = html;
-            }
-
-            document.getElementById('materialTrendsSection').classList.remove('hidden');
-        }
-
-        function showError(message) {
-            const container = document.querySelector('.container');
-            const alertDiv = document.createElement('div');
-            alertDiv.className = 'alert alert-error';
-            alertDiv.textContent = message;
-            container.insertBefore(alertDiv, container.children[1]);
-            setTimeout(() => alertDiv.remove(), 5000);
-        }
-
-        // Load on page load
-        loadAnalytics();
-
-        // Re-load after login
-        window.addEventListener('userLoggedIn', loadAnalytics);
-
-        // Auto-refresh every 60 seconds
-        setInterval(loadAnalytics, 60000);
+        document.querySelectorAll('#periodPicker [data-days]').forEach(function (b) {
+            b.addEventListener('click', function () {
+                days = parseInt(b.dataset.days, 10);
+                document.querySelectorAll('#periodPicker [data-days]').forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+                loadAll();
+            });
+        });
+        refreshBtn.addEventListener('click', loadAll);
+        Auth.onReady(loadAll);
+        setInterval(function () { if (document.visibilityState === 'visible' && Session.isLoggedIn()) loadAll(); }, 120000);
+    })();
     </script>
 </body>
 </html>

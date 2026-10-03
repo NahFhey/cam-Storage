@@ -3,208 +3,129 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CAM Tracking - Job Detail</title>
+    <title>Job · CAM Tracking</title>
     <link rel="stylesheet" href="/static/css/styles.css">
-</head>
-<body>
-    <nav>
-        <h1>CAM Tracking Kiosk</h1>
-        <div class="nav-links">
-            <a href="/static/index.html">Entry</a>
-            <a href="/static/hot-list.html">Hot List</a>
-            <a href="/static/search.html">Search</a>
-            <a href="/static/analytics.html">Analytics</a>
-            <a href="/static/admin.html">Admin</a>
-        </div>
-    </nav>
-
-    <div class="container">
-        <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h2 id="jobTitle" class="card-header" style="margin-bottom: 0;">Loading...</h2>
-                <a href="/static/search.html" class="btn btn-secondary">Back to Search</a>
-            </div>
-
-            <div id="loading" class="spinner"></div>
-
-            <div id="jobInfo" class="hidden"></div>
-        </div>
-
-        <div id="camItemsCard" class="card hidden">
-            <h3 class="card-header">CAM Items</h3>
-            <div id="camItemsContent"></div>
-        </div>
-    </div>
-
+    <script src="/static/js/ui.js"></script>
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/layout.js"></script>
+</head>
+<body data-page="job">
+    <main class="page">
+        <a href="#" class="back-link" id="backLink"></a>
+        <div class="page-header">
+            <div>
+                <h1 id="jobTitle"><span class="skeleton" style="display:inline-block;width:12rem;height:1.8rem"></span></h1>
+                <p id="jobSubtitle"></p>
+            </div>
+            <div class="page-actions" id="jobActions"></div>
+        </div>
+
+        <div id="jobBody">
+            <div class="grid grid-4" id="stationTiles" style="margin-bottom:1rem"></div>
+            <div class="card hidden" id="notesCard"></div>
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <div class="card-title">Tools</div>
+                        <div class="card-subtitle">Sharpening history and material life for the current lifespan.</div>
+                    </div>
+                    <div class="legend" id="lifeLegend"></div>
+                </div>
+                <div id="toolsTable"><div class="spinner"></div></div>
+            </div>
+        </div>
+    </main>
+
     <script src="/static/js/auth.js"></script>
     <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        const jobId = urlParams.get('id');
+    (function () {
+        'use strict';
+        var U = UI;
+        var jobId = new URLSearchParams(location.search).get('id');
+        var back = document.getElementById('backLink');
+        back.innerHTML = U.icon('arrowLeft') + 'Back';
+        back.addEventListener('click', function (e) {
+            e.preventDefault();
+            if (history.length > 1 && document.referrer.indexOf(location.host) >= 0) history.back();
+            else location.href = '/static/hot-list.html';
+        });
+        document.getElementById('lifeLegend').innerHTML =
+            '<span><i style="background:var(--success)"></i>Under 70%</span><span><i style="background:var(--warning)"></i>70–89%</span><span><i style="background:var(--danger)"></i>90%+ used</span>';
 
-        const loading = document.getElementById('loading');
-        const jobTitle = document.getElementById('jobTitle');
-        const jobInfo = document.getElementById('jobInfo');
-        const camItemsCard = document.getElementById('camItemsCard');
-        const camItemsContent = document.getElementById('camItemsContent');
-
-        if (!jobId) {
-            showError('No job ID provided');
-        } else {
-            loadJob();
+        function fail(message) {
+            document.getElementById('jobTitle').textContent = 'Job not available';
+            document.getElementById('jobBody').innerHTML = '<div class="card">' + U.emptyState('alert', message) + '</div>';
         }
 
-        // Re-load after login
-        window.addEventListener('userLoggedIn', function() {
-            if (jobId) loadJob();
-        });
-
-        async function loadJob() {
-            loading.classList.remove('hidden');
-
+        async function load() {
+            if (!jobId) { fail('No job selected'); return; }
             try {
-                const data = await getJob(jobId);
-                const job = data.job;
-                const camItems = data.cam_items;
-
-                jobTitle.textContent = `S${job.s_number}`;
-
-                // Display job info
-                const infoHtml = `
-                    <div class="grid grid-2">
-                        <div>
-                            <p><strong>Title:</strong> ${job.title || 'N/A'}</p>
-                            <p><strong>Base Priority:</strong> ${(job.priority_level || 'low').charAt(0).toUpperCase() + (job.priority_level || 'low').slice(1)}</p>
-                            <p><strong>Created:</strong> ${formatDateTime(job.created_at)}</p>
-                        </div>
-                        <div>
-                            <p><strong>Notes:</strong> ${job.notes || 'None'}</p>
-                        </div>
-                    </div>
-                `;
-                jobInfo.innerHTML = infoHtml;
-                jobInfo.classList.remove('hidden');
-
-                // Display cam items
-                if (camItems.length > 0) {
-                    displayCamItems(camItems, job);
-                    camItemsCard.classList.remove('hidden');
-                } else {
-                    camItemsContent.innerHTML = '<p class="text-center">No CAM items found for this job.</p>';
-                    camItemsCard.classList.remove('hidden');
-                }
-            } catch (error) {
-                showError(error.message);
-            } finally {
-                loading.classList.add('hidden');
+                var results = await Promise.all([API.job(jobId), API.jobToolStats(jobId)]);
+                render(results[0], results[1]);
+            } catch (err) {
+                fail(err.message);
             }
         }
 
-        async function displayCamItems(camItems, job) {
-            // Group by set
-            const sets = {};
-            camItems.forEach(cam => {
-                if (!sets[cam.set_no]) {
-                    sets[cam.set_no] = [];
-                }
-                sets[cam.set_no].push(cam);
+        function render(data, stats) {
+            var job = data.job, cams = data.cam_items;
+            document.title = 'S' + job.s_number + ' · CAM Tracking';
+            document.getElementById('jobTitle').innerHTML = 'S' + U.esc(job.s_number) + ' ' + U.priorityBadge(job.priority_level);
+            document.getElementById('jobSubtitle').textContent = (job.title || 'Untitled job') + ' · created ' + U.formatDate(job.created_at);
+            document.getElementById('jobActions').innerHTML =
+                '<a class="btn btn-primary btn-lg" href="/static/index.html?q=' + encodeURIComponent(job.s_number) + '">' + U.icon('scan') + 'Move tools</a>';
+
+            var counts = {};
+            cams.forEach(function (c) { counts[c.status_station] = (counts[c.status_station] || 0) + 1; });
+            document.getElementById('stationTiles').innerHTML = U.STATIONS.map(function (s) {
+                var n = counts[s] || 0;
+                return '<div class="stat" data-station="' + s + '"><div class="stat-label">' + U.stationLabel(s) + '</div>' +
+                    '<div class="stat-value">' + n + '</div><div class="stat-sub">' +
+                    (cams.length ? Math.round(n / cams.length * 100) + '% of ' + cams.length + ' tools' : 'No tools') + '</div></div>';
+            }).join('');
+
+            var notesCard = document.getElementById('notesCard');
+            if (job.notes) {
+                notesCard.innerHTML = '<div class="card-title" style="margin-bottom:0.4rem">Notes</div><p style="white-space:pre-wrap">' + U.esc(job.notes) + '</p>';
+                notesCard.classList.remove('hidden');
+            }
+
+            var container = document.getElementById('toolsTable');
+            if (!cams.length) {
+                container.innerHTML = U.emptyState('tool', 'No tools yet', 'An admin can add sets and cams from Admin → Tools.');
+                return;
+            }
+
+            var statsById = {};
+            stats.forEach(function (s) { statsById[s.cam_item_id] = s; });
+            var html = '<div class="table-wrap"><table class="table"><thead><tr>' +
+                '<th>Set</th><th>Cam</th><th>Station</th><th class="num">Sharpenings</th><th class="num">Last removed</th>' +
+                '<th class="num">Avg removed</th><th class="num">This life</th><th class="num">Remaining</th><th>Life used</th><th>Notes</th>' +
+                '</tr></thead><tbody>';
+            var prevSet = null;
+            cams.forEach(function (cam) {
+                var s = statsById[cam.id] || {};
+                var newSet = cam.set_no !== prevSet;
+                prevSet = cam.set_no;
+                var low = s.material_remaining !== undefined && s.material_remaining < 0.05;
+                html += '<tr class="' + (newSet ? 'set-start' : '') + '">' +
+                    '<td class="nowrap">' + (newSet ? '<strong>Set ' + cam.set_no + '</strong>' : '') + '</td>' +
+                    '<td class="nowrap"><a href="/static/index.html?q=' + encodeURIComponent(job.s_number + '-' + cam.set_no + '-' + cam.cam_no) + '" title="Move this tool">Cam ' + cam.cam_no + '</a>' +
+                    (cam.die_position ? ' <span class="muted" style="font-size:0.82rem">' + U.esc(U.capitalize(cam.die_position)) + '</span>' : '') + '</td>' +
+                    '<td>' + U.stationBadge(cam.status_station) + '</td>' +
+                    '<td class="num">' + (s.sharpen_count || 0) + '</td>' +
+                    '<td class="num">' + U.inches(s.last_material_removed) + '</td>' +
+                    '<td class="num">' + U.inches(s.avg_material_removed) + '</td>' +
+                    '<td class="num">' + (s.lifespan_material_removed ? U.inches(s.lifespan_material_removed) : '—') + '</td>' +
+                    '<td class="num"' + (low ? ' style="color:var(--danger);font-weight:700"' : '') + '>' + U.inches(s.material_remaining) + '</td>' +
+                    '<td>' + U.meter(s.percent_life_used || 0) + '</td>' +
+                    '<td class="muted">' + (cam.notes ? U.esc(cam.notes) : '—') + '</td></tr>';
             });
-
-            // Fetch sharpen stats and lifespan data for all cams in parallel
-            const statsPromises = camItems.map(cam =>
-                fetch(`/api/cam-items/${cam.id}/sharpen-stats`)
-                    .then(r => r.json())
-                    .then(stats => ({cam_id: cam.id, stats}))
-                    .catch(() => ({cam_id: cam.id, stats: null}))
-            );
-            const lifespanPromises = camItems.map(cam =>
-                fetch(`/api/cam-items/${cam.id}/lifespan`)
-                    .then(r => r.json())
-                    .then(data => ({cam_id: cam.id, data}))
-                    .catch(() => ({cam_id: cam.id, data: null}))
-            );
-            const [statsResults, lifespanResults] = await Promise.all([
-                Promise.all(statsPromises),
-                Promise.all(lifespanPromises)
-            ]);
-            const statsMap = {};
-            statsResults.forEach(r => { statsMap[r.cam_id] = r.stats; });
-            const lifespanMap = {};
-            lifespanResults.forEach(r => { lifespanMap[r.cam_id] = r.data; });
-
-            let html = '<div class="table-responsive"><table class="table"><thead><tr>';
-            html += '<th>Set</th><th>Cam</th><th>Station</th><th>Sharpen Count</th><th>Last Removed</th><th>Avg Removed</th><th>Total Removed</th><th>Life Remaining</th><th>Life %</th><th>Notes</th>';
-            html += '</tr></thead><tbody>';
-
-            Object.keys(sets).sort((a, b) => parseInt(a) - parseInt(b)).forEach(setNo => {
-                const cams = sets[setNo].sort((a, b) => a.cam_no - b.cam_no);
-
-                cams.forEach((cam, index) => {
-                    const stats = statsMap[cam.id];
-                    const ls = lifespanMap[cam.id];
-                    const currentLs = ls && ls.current_lifespan;
-                    html += '<tr>';
-                    if (index === 0) {
-                        html += `<td rowspan="${cams.length}"><strong>Set ${setNo}</strong></td>`;
-                    }
-                    html += `<td>${cam.cam_no}</td>`;
-                    html += `<td><span class="badge ${getStationBadgeClass(cam.status_station)}">${formatStation(cam.status_station)}</span></td>`;
-                    html += `<td>${stats ? stats.sharpen_count : 0}</td>`;
-                    html += `<td>${stats && stats.last_material_removed ? stats.last_material_removed.toFixed(3) + '"' : '-'}</td>`;
-                    html += `<td>${stats && stats.avg_material_removed ? stats.avg_material_removed.toFixed(3) + '"' : '-'}</td>`;
-
-                    // Total Removed (current lifespan)
-                    html += `<td>${currentLs && currentLs.total_removed > 0 ? currentLs.total_removed.toFixed(3) + '"' : '-'}</td>`;
-
-                    // Life Remaining
-                    const remaining = currentLs ? currentLs.material_remaining : null;
-                    const remainingStyle = remaining !== null && remaining < 0.050 ? ' style="color: #dc2626; font-weight: bold;"' : '';
-                    html += `<td${remainingStyle}>${remaining !== null ? remaining.toFixed(3) + '"' : '-'}</td>`;
-
-                    // Life % with progress bar
-                    const pctUsed = currentLs ? currentLs.percent_life_used : 0;
-                    const barColor = pctUsed >= 90 ? '#dc2626' : pctUsed >= 70 ? '#d97706' : '#16a34a';
-                    html += `<td>
-                        <div style="display:flex; align-items:center; gap:0.5rem;">
-                            <div style="flex:1; height:8px; background:#e2e8f0; border-radius:4px; overflow:hidden; min-width:60px;">
-                                <div style="width:${Math.min(pctUsed, 100)}%; height:100%; background:${barColor}; border-radius:4px;"></div>
-                            </div>
-                            <span style="font-size:0.8rem; min-width:2.5rem; text-align:right;">${pctUsed.toFixed(0)}%</span>
-                        </div>
-                    </td>`;
-
-                    html += `<td>${cam.notes || '-'}</td>`;
-                    html += '</tr>';
-                });
-            });
-
-            html += '</tbody></table></div>';
-
-            // Add station summary
-            const stationCounts = camItems.reduce((acc, cam) => {
-                acc[cam.status_station] = (acc[cam.status_station] || 0) + 1;
-                return acc;
-            }, {});
-
-            html += '<div class="grid grid-4 mt-4">';
-            ['active', 'sharpen', 'cabinet', 'refill'].forEach(station => {
-                const count = stationCounts[station] || 0;
-                html += `
-                    <div class="stat-card">
-                        <div class="stat-value">${count}</div>
-                        <div class="stat-label">${formatStation(station)}</div>
-                    </div>
-                `;
-            });
-            html += '</div>';
-
-            camItemsContent.innerHTML = html;
+            container.innerHTML = html + '</tbody></table></div>';
         }
 
-        function showError(message) {
-            jobInfo.innerHTML = `<div class="alert alert-error">${message}</div>`;
-            jobInfo.classList.remove('hidden');
-        }
+        Auth.onReady(load);
+    })();
     </script>
 </body>
 </html>
