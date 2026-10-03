@@ -73,24 +73,17 @@ The application maintains a complete audit log of all movements, computes priori
 
 ### On Raspberry Pi or Linux:
 
+For a production kiosk (service, auto-start, backups), follow **[INSTALL_RASPBERRY_PI.md](INSTALL_RASPBERRY_PI.md)**. For a quick local run:
+
 ```bash
-# 1. Clone or copy the repository
-cd /home/pi/cam-tracking
-
-# 2. Install Python dependencies
-pip3 install -r requirements.txt
-
-# 3. Initialize the database
-python3 database.py
-
-# 4. (Optional) Seed test data
-python3 seed_data.py
-
-# 5. Start the server
-python3 main.py
+cd cam-tracking
+python3 -m venv venv                      # current Raspberry Pi OS / Debian refuse system-wide pip installs
+venv/bin/pip install -r requirements.txt
+venv/bin/python seed_data.py              # optional: sample data
+venv/bin/python main.py                   # creates/upgrades the database on start
 ```
 
-The server will start on `http://0.0.0.0:8000`
+The server starts on `http://0.0.0.0:8000`. Sign in with the default admin PIN **1234** and change it under **Admin → Users**.
 
 ### On Windows (Development):
 
@@ -115,92 +108,35 @@ Access the application at `http://localhost:8000`
 ## Configuration
 
 ### Environment Variables:
-Create a `.env` file (optional) or set these in your shell:
+Set these in your shell, or as `Environment=` lines in the systemd service on a kiosk. (The app does not read `.env` files.)
 
 ```bash
 # Database location
 export CAM_DB_PATH="./cam_tracking.db"
 
-# Auto-bump feature (can also be toggled in Admin UI)
-export AUTO_BUMP_ENABLED="false"
-
-# Default material life for tool lifespans (inches)
-export DEFAULT_MATERIAL_LIFE="0.375"
-
 # Session duration (hours, default: 8-hour shift)
 export SESSION_DURATION_HOURS="8"
 
-# Server settings
+# Operator name recorded for system-created moves
+export DEFAULT_OPERATOR="kiosk"
+
+# Server settings (HOST=127.0.0.1 restricts access to this machine)
 export HOST="0.0.0.0"
 export PORT="8000"
 ```
 
 ### Runtime Configuration:
-The **Admin** page provides a UI to toggle:
-- **Auto-Bump**: When moving a tool to Active, automatically move any existing Active tool from the same job+set to Sharpen
+These settings are stored in the database (not environment variables) and changed under **Admin → Settings & data**:
+- **Auto-Bump** (on for new databases): When moving a cam to Active, the active cam with the same die position from a *different* set of the job is moved to Sharpen
 - **Default Material Life**: Default max material life for new tool lifespans
 
 ## Running on Raspberry Pi Kiosk Mode
 
-### Setup Script:
-Use the provided startup script for production deployment:
+See **[INSTALL_RASPBERRY_PI.md](INSTALL_RASPBERRY_PI.md)** for the full setup. In short:
 
-```bash
-# 1. Make script executable
-chmod +x start_kiosk.sh
-
-# 2. Run on boot (add to /etc/rc.local or create systemd service)
-sudo nano /etc/rc.local
-
-# Add before "exit 0":
-/home/pi/cam-tracking/start_kiosk.sh &
-```
-
-### Manual Kiosk Mode:
-
-```bash
-# 1. Start the server in background
-python3 main.py &
-
-# 2. Wait for server to start
-sleep 3
-
-# 3. Launch Chromium in kiosk mode
-chromium-browser \
-  --kiosk \
-  --start-fullscreen \
-  --noerrdialogs \
-  --disable-infobars \
-  --disable-session-crashed-bubble \
-  http://localhost:8000
-```
-
-### Systemd Service (Recommended):
-
-Create `/etc/systemd/system/cam-tracking.service`:
-
-```ini
-[Unit]
-Description=CAM Tracking Kiosk Server
-After=network.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/cam-tracking
-ExecStart=/usr/bin/python3 /home/pi/cam-tracking/main.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-```bash
-sudo systemctl enable cam-tracking
-sudo systemctl start cam-tracking
-```
+- The server runs as the `cam-tracking` systemd service ([`cam-tracking.service`](cam-tracking.service)) using the app's virtualenv.
+- [`start_kiosk.sh`](start_kiosk.sh) runs from the desktop autostart. It waits for the server, then opens Chromium full-screen. (Without the service, it starts the server itself.)
+- [`backup_db.sh`](backup_db.sh) makes safe nightly database backups from cron.
 
 ## User Guide
 
@@ -384,27 +320,15 @@ Interactive documentation is served at `/docs` while the server is running. Endp
 ## Backup and Maintenance
 
 ### Database Backup:
-```bash
-# Via web UI: Admin → Export → Download Database
-
-# Or manually:
-cp cam_tracking.db cam_tracking_backup_$(date +%Y%m%d).db
-```
+- From the app: **Admin → Settings & data → Full database backup**
+- Automatically: `./backup_db.sh`, which is safe while the server is running and keeps the newest 30 copies in `~/cam-backups`. Don't `cp` the live database: it can copy a half-written state.
 
 ### Logs:
-Application logs to stdout. Redirect when running as service:
-```bash
-python3 main.py > cam_tracking.log 2>&1
-```
+- Application log: `cam_tracking.log` in the app directory
+- When running as a service, startup errors and tracebacks go to the journal: `journalctl -u cam-tracking`
 
 ### Updates:
-To update the application:
-1. Stop the server
-2. Backup the database
-3. Pull new code/copy new files
-4. Restart the server
-
-Database schema migrations are backward compatible in Phase 1.
+Back up, `git pull`, `venv/bin/pip install -r requirements.txt`, restart the service, then restart Chromium (or reboot). Database changes are applied automatically on start. Details: [INSTALL_RASPBERRY_PI.md § Updating](INSTALL_RASPBERRY_PI.md#8-updating).
 
 ## Development
 
@@ -431,6 +355,10 @@ cam-tracking/
 ├── database.py              # Schema, migrations, connection pooling
 ├── config.py                # Configuration settings
 ├── seed_data.py             # Test data generator
+├── start_kiosk.sh           # Opens the kiosk browser (Pi desktop autostart)
+├── backup_db.sh             # Safe database backup with rotation (cron)
+├── cam-tracking.service     # systemd unit for the server
+├── INSTALL_RASPBERRY_PI.md  # Kiosk installation, updates, troubleshooting
 ├── tests/                   # Test suite
 └── static/                  # Frontend (no build step, works offline)
     ├── css/styles.css       # Design system: tokens, light/dark themes, components

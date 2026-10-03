@@ -1,3 +1,12 @@
+# CAM Tracking Kiosk server.
+#
+# Paths assume the app lives in /home/pi/cam-tracking with a virtualenv in
+# ./venv. INSTALL_RASPBERRY_PI.md installs this file with your own username
+# and home directory substituted for "pi".
+#
+# Logs: the app writes cam_tracking.log in WorkingDirectory; stdout/stderr
+# (startup errors, tracebacks) go to the journal: journalctl -u cam-tracking
+
 [Unit]
 Description=CAM Tracking Kiosk Server
 After=network.target
@@ -6,13 +15,15 @@ After=network.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/cam-tracking
-Environment="PATH=/usr/bin:/usr/local/bin"
 Environment="CAM_DB_PATH=/home/pi/cam-tracking/cam_tracking.db"
-ExecStart=/usr/bin/python3 /home/pi/cam-tracking/main.py
+Environment="PYTHONUNBUFFERED=1"
+# 0.0.0.0 lets other PCs on the network open the app (e.g. the hot list from
+# the office). Use 127.0.0.1 to restrict it to the kiosk itself.
+Environment="HOST=0.0.0.0"
+Environment="PORT=8000"
+ExecStart=/home/pi/cam-tracking/venv/bin/python /home/pi/cam-tracking/main.py
 Restart=always
 RestartSec=5
-StandardOutput=append:/home/pi/cam-tracking/cam_tracking.log
-StandardError=append:/home/pi/cam-tracking/cam_tracking.log
 
 [Install]
 WantedBy=multi-user.target
