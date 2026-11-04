@@ -52,7 +52,8 @@ async def move_cam(request: Request, move: MoveRequest, db: aiosqlite.Connection
             operator=user["display_name"],
             notes=move.notes,
             auto_bump=move.auto_bump,
-            material_removed=move.material_removed
+            material_removed=move.material_removed,
+            exclude_from_avg=move.exclude_from_avg or False
         )
     except ValueError as e:
         raise _http_error(e)
@@ -72,7 +73,9 @@ async def move_set(request: Request, body: SetMoveRequest, db: aiosqlite.Connect
         result = await move_set_to_station(
             db, body.job_id, body.set_no, body.to_station,
             operator=user["display_name"],
-            material_removed=body.material_removed
+            material_removed=body.material_removed,
+            notes=body.notes,
+            exclude_from_avg=body.exclude_from_avg
         )
     except ValueError as e:
         raise _http_error(e)
@@ -107,7 +110,8 @@ async def batch_move(request: Request, batch: BatchMoveRequest, db: aiosqlite.Co
                 operator=user["display_name"],
                 notes=item.notes,
                 auto_bump=batch.auto_bump,
-                material_removed=item.material_removed
+                material_removed=item.material_removed,
+                exclude_from_avg=item.exclude_from_avg or False
             ))
         except Exception as e:
             message = "CAM item not found" if isinstance(e, CamNotFoundError) else str(e)

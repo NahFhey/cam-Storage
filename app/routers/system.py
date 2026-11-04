@@ -125,50 +125,27 @@ async def export_moves_csv(user: dict = Depends(get_current_user)):
 @router.get("/api/export/tool-lifespans/csv")
 async def export_tool_lifespans_csv(user: dict = Depends(get_current_user)):
     columns = ['s_number', 'set_no', 'cam_no', 'lifespan_number', 'started_at', 'ended_at',
-               'sharpen_count', 'total_material_removed', 'max_material_life', 'percent_used', 'status']
+               'sharpen_count', 'total_material_removed', 'max_material_life', 'percent_used', 'status',
+               'exclude_from_avg', 'early_refill_note']
     return csv_response(
         "tool_lifespans.csv", columns,
         """SELECT j.s_number, c.set_no, c.cam_no, tl.lifespan_number, tl.started_at, tl.ended_at,
-                  tl.sharpen_count, tl.total_material_removed, tl.max_material_life,
+                  tl.sharpen_count, tl.total_material_removed, tl.max_material_life, tl.exclude_from_avg,
                   CASE WHEN tl.max_material_life > 0
                        THEN ROUND((tl.total_material_removed / tl.max_material_life) * 100, 1)
                        ELSE 0 END as percent_used,
-                  CASE WHEN tl.ended_at IS NULL THEN 'active' ELSE 'completed' END as status
+                  CASE WHEN tl.ended_at IS NULL THEN 'active' ELSE 'completed' END as status,
+                  COALESCE(m.notes, '') AS early_refill_note
            FROM tool_lifespans tl
            JOIN cam_items c ON tl.cam_item_id = c.id
            JOIN jobs j ON c.job_id = j.id
+           LEFT JOIN moves m ON (
+               m.cam_item_id = tl.cam_item_id
+               AND m.to_station = 'refill'
+               AND m.notes LIKE 'Early refill:%'
+               AND ABS(julianday(tl.ended_at) - julianday(m.moved_at)) * 86400 < 2
+           )
            ORDER BY j.s_number, c.set_no, c.cam_no, tl.lifespan_number""",
-        lambda r: [r[c] for c in columns]
-    )
-
-
-@router.get("/api/export/tool-summary/csv")
-async def export_tool_summary_csv(user: dict = Depends(get_current_user)):
-    """One row per tool with aggregates across all of its lifespans."""
-    columns = ['s_number', 'set_no', 'cam_no', 'current_station', 'current_lifespan_number',
-               'total_refills', 'total_sharpenings', 'total_material_removed',
-               'current_cycle_sharpenings', 'current_cycle_material_removed',
-               'current_cycle_percent_used', 'max_material_life']
-    return csv_response(
-        "tool_summary.csv", columns,
-        """SELECT j.s_number, c.set_no, c.cam_no,
-                  c.status_station AS current_station,
-                  c.max_material_life,
-                  COALESCE(cur.lifespan_number, MAX(tl.lifespan_number), 0) AS current_lifespan_number,
-                  MAX(COALESCE(MAX(tl.lifespan_number), 1) - 1, 0) AS total_refills,
-                  COALESCE(SUM(tl.sharpen_count), 0) AS total_sharpenings,
-                  COALESCE(SUM(tl.total_material_removed), 0.0) AS total_material_removed,
-                  COALESCE(cur.sharpen_count, 0) AS current_cycle_sharpenings,
-                  COALESCE(cur.total_material_removed, 0.0) AS current_cycle_material_removed,
-                  CASE WHEN c.max_material_life > 0
-                       THEN ROUND(COALESCE(cur.total_material_removed, 0.0) / c.max_material_life * 100, 1)
-                       ELSE 0 END AS current_cycle_percent_used
-           FROM cam_items c
-           JOIN jobs j ON c.job_id = j.id
-           LEFT JOIN tool_lifespans tl ON tl.cam_item_id = c.id
-           LEFT JOIN tool_lifespans cur ON cur.cam_item_id = c.id AND cur.ended_at IS NULL
-           GROUP BY c.id
-           ORDER BY j.s_number, c.set_no, c.cam_no""",
         lambda r: [r[c] for c in columns]
     )
 

@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS tool_lifespans (
     total_material_removed REAL NOT NULL DEFAULT 0.0,
     sharpen_count INTEGER NOT NULL DEFAULT 0,
     max_material_life REAL NOT NULL DEFAULT 0.375,
+    exclude_from_avg BOOLEAN NOT NULL DEFAULT 0,
     FOREIGN KEY (cam_item_id) REFERENCES cam_items(id) ON DELETE CASCADE,
     UNIQUE(cam_item_id, lifespan_number)
 );
@@ -246,6 +247,7 @@ def init_database(db_path: str = None):
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA_SQL)
+    _migrate_lifespan_exclusion(conn.cursor())
     conn.commit()
     ensure_default_admin(conn)
     conn.close()
@@ -352,6 +354,14 @@ def _columns(cursor, table: str) -> set:
     return {col[1] for col in cursor.fetchall()}
 
 
+def _migrate_lifespan_exclusion(cursor):
+    """Exclude open legacy lifespans only when the column is first added."""
+    if 'exclude_from_avg' not in _columns(cursor, 'tool_lifespans'):
+        cursor.execute("ALTER TABLE tool_lifespans ADD COLUMN exclude_from_avg BOOLEAN NOT NULL DEFAULT 0")
+        cursor.execute("UPDATE tool_lifespans SET exclude_from_avg = 1 WHERE ended_at IS NULL")
+        logger.info(f"  Added exclude_from_avg; excluded {cursor.rowcount} open legacy lifespan(s)")
+
+
 def migrate_database(db_path: str = None):
     """Bring an existing database up to the current schema (idempotent)."""
     if db_path is None:
@@ -390,6 +400,7 @@ def migrate_database(db_path: str = None):
     # Creates any missing tables, indexes and default config rows
     conn.commit()
     conn.executescript(SCHEMA_SQL)
+    _migrate_lifespan_exclusion(cursor)
 
     if not lifespans_existed:
         _backfill_lifespans(cursor)
@@ -409,8 +420,8 @@ def _backfill_lifespans(cursor):
     insert_sql = """
         INSERT INTO tool_lifespans
         (cam_item_id, lifespan_number, started_at, ended_at,
-         total_material_removed, sharpen_count, max_material_life)
-        VALUES (?, ?, ?, ?, ?, ?, 0.375)
+         total_material_removed, sharpen_count, max_material_life, exclude_from_avg)
+        VALUES (?, ?, ?, ?, ?, ?, 0.375, 1)
     """
     backfill_count = 0
     for cam_id in cam_ids:

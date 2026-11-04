@@ -213,23 +213,6 @@ class TestExports:
         assert rows[0][:3] == ["s_number", "set_no", "cam_no"]
         assert [r[:3] for r in rows[1:]] == [[job["s_number"], "1", "1"], [job["s_number"], "2", "1"]]
 
-    def test_tool_summary_csv(self, client, auth_headers):
-        job = _create_job(client, auth_headers)
-        ids = _bulk(client, auth_headers, job["id"], 1, [{"cam_no": 1}])
-        cam_id = ids[(1, 1)]
-        _move(client, auth_headers, cam_id, "sharpen")
-        _move(client, auth_headers, cam_id, "cabinet", material=0.05)
-        _move(client, auth_headers, cam_id, "refill")
-        _move(client, auth_headers, cam_id, "cabinet")
-
-        rows = self._rows(client.get("/api/export/tool-summary/csv", headers=auth_headers))
-        record = dict(zip(rows[0], rows[1]))
-        assert record["current_lifespan_number"] == "2"
-        assert record["total_refills"] == "1"
-        assert record["total_sharpenings"] == "1"
-        assert float(record["total_material_removed"]) == pytest.approx(0.05)
-        assert record["current_cycle_sharpenings"] == "0"
-
     def test_priority_changes_csv_requires_admin(self, client, user_auth_headers):
         assert client.get("/api/export/priority-changes/csv", headers=user_auth_headers).status_code == 403
 

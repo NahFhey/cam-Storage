@@ -322,6 +322,29 @@
             document.querySelectorAll('.station-btn').forEach(function (b) { b.style.pointerEvents = on ? 'none' : ''; });
         }
 
+        async function earlyRefillDetails(cam, job) {
+            var lifespan = await API.camLifespan(cam.id);
+            var current = lifespan.current_lifespan;
+            if (!current.early_refill_required) return {};
+            return U.openDialog({
+                title: 'Early refill: ' + U.toolIdText(job.s_number, cam.set_no, cam.cam_no),
+                text: 'This tool has more than 10% of its life remaining. Enter a reason for refilling early.',
+                confirmLabel: 'Confirm refill',
+                danger: true,
+                body: U.inlineAlert(U.inches(current.material_remaining) + ' remaining (' + current.percent_life_used + '% used)', 'warning') +
+                    '<div class="field"><label class="field-label" for="earlyRefillNote">Reason for early refill</label>' +
+                    '<textarea id="earlyRefillNote" class="textarea" rows="3" maxlength="486" placeholder="Reason for early refill" autofocus></textarea></div>' +
+                    '<label class="switch field"><input id="earlyRefillExclude" type="checkbox" checked>' +
+                    '<span class="switch-track"></span><span class="switch-text"><strong>Exclude this lifecycle from the normal average</strong>' +
+                    '<span>Recommended if this was an abnormal lifecycle.</span></span></label>',
+                onConfirm: function (dialog) {
+                    var note = dialog.querySelector('#earlyRefillNote').value.trim();
+                    if (!note) throw new Error('A reason is required for early refill');
+                    return { notes: 'Early refill: ' + note, exclude_from_avg: dialog.querySelector('#earlyRefillExclude').checked };
+                }
+            });
+        }
+
         async function moveOne(station, btn) {
             var cam = state.cam, job = state.job;
             var label = U.toolIdText(job.s_number, cam.set_no, cam.cam_no);
@@ -333,7 +356,9 @@
             busy(true);
             btn.style.opacity = '0.6';
             try {
-                var result = await API.moveCam({ cam_item_id: cam.id, to_station: station, material_removed: material });
+                var refill = station === 'refill' ? await earlyRefillDetails(cam, job) : {};
+                if (refill === null) return;
+                var result = await API.moveCam(Object.assign({ cam_item_id: cam.id, to_station: station, material_removed: material }, refill));
                 U.toast(label + ' → ' + U.stationLabel(station), {
                     type: 'success',
                     detail: result.auto_bumped
@@ -368,7 +393,21 @@
             busy(true);
             btn.style.opacity = '0.6';
             try {
-                var result = await API.moveSet({ job_id: job.id, set_no: setNo, to_station: station, material_removed: material });
+                var notes = {}, exclusions = {};
+                if (station === 'refill') {
+                    var cams = state.setCams.filter(function (c) { return c.status_station !== 'refill'; })
+                        .sort(function (a, b) { return a.cam_no - b.cam_no; });
+                    for (var j = 0; j < cams.length; j++) {
+                        var refill = await earlyRefillDetails(cams[j], job);
+                        if (refill === null) return;
+                        if (refill.notes) {
+                            notes[cams[j].id] = refill.notes;
+                            exclusions[cams[j].id] = refill.exclude_from_avg;
+                        }
+                    }
+                }
+                var result = await API.moveSet({ job_id: job.id, set_no: setNo, to_station: station,
+                    material_removed: material, notes: notes, exclude_from_avg: exclusions });
                 var label = U.toolIdText(job.s_number, setNo);
                 var ids = result.moved.concat(result.bumped).map(function (m) { return m.cam_item_id; });
                 U.toast(label + ': ' + result.moved.length + ' cam' + (result.moved.length === 1 ? '' : 's') + ' → ' + U.stationLabel(station), {

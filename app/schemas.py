@@ -112,6 +112,7 @@ class MoveRequest(BaseModel):
     notes: Optional[str] = Field(None, max_length=500)
     auto_bump: Optional[bool] = None
     material_removed: Optional[float] = MaterialRemoved
+    exclude_from_avg: Optional[bool] = Field(None, description="Exclude this lifecycle from the rolling average")
 
 
 class BatchMoveItem(BaseModel):
@@ -119,6 +120,7 @@ class BatchMoveItem(BaseModel):
     to_station: Station
     notes: Optional[str] = Field(None, max_length=500)
     material_removed: Optional[float] = MaterialRemoved
+    exclude_from_avg: Optional[bool] = Field(None, description="Exclude this lifecycle from the rolling average")
 
 
 class BatchMoveRequest(BaseModel):
@@ -133,6 +135,8 @@ class SetMoveRequest(BaseModel):
     material_removed: Dict[int, Annotated[float, Field(ge=0.0, le=1.0)]] = Field(
         default_factory=dict, description="cam_item_id -> inches, for sharpen->cabinet moves"
     )
+    notes: Dict[int, Annotated[str, Field(max_length=500)]] = Field(default_factory=dict)
+    exclude_from_avg: Dict[int, bool] = Field(default_factory=dict)
 
 
 class EntryResolveRequest(BaseModel):

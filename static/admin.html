@@ -783,7 +783,7 @@
 
         var EXPORTS = [
             ['jobs', 'Jobs'], ['cam-items', 'Tools'], ['moves', 'Move history'],
-            ['tool-lifespans', 'Tool lifespans'], ['tool-summary', 'Tool lifetime summary'], ['priority-changes', 'Priority changes']
+            ['tool-lifespans', 'Tool lifespans'], ['priority-changes', 'Priority changes']
         ];
         document.getElementById('exports').innerHTML = EXPORTS.map(function (e) {
             return '<button type="button" class="btn btn-lg" data-export="' + e[0] + '">' + U.icon('download') + e[1] + '</button>';

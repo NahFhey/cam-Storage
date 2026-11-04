@@ -57,18 +57,18 @@ async def _insert_move(db, cam_item_id: int, from_station: str, to_station: str,
 
 
 async def _apply_lifespan_tracking(db, cam_item_id: int, from_station: str, to_station: str,
-                                   material_removed: Optional[float]):
+                                   material_removed: Optional[float], exclude_from_avg: bool = False):
     if requires_material_removed(from_station, to_station) and material_removed is not None:
         await update_lifespan_on_sharpen(db, cam_item_id, material_removed)
     if to_station == 'refill':
-        await close_lifespan_on_refill(db, cam_item_id)
+        await close_lifespan_on_refill(db, cam_item_id, exclude_from_avg=exclude_from_avg)
     if from_station == 'refill':
         await open_new_lifespan(db, cam_item_id)
 
 
 async def _apply_move(db, cam_item_id: int, to_station: str, operator: str,
                       notes: Optional[str] = None, auto_bump: bool = False,
-                      material_removed: Optional[float] = None) -> Dict:
+                      material_removed: Optional[float] = None, exclude_from_avg: bool = False) -> Dict:
     """Perform a single move inside the caller's transaction (no commit)."""
     if to_station not in config.STATIONS:
         raise ValueError(f"Invalid station: {to_station}")
@@ -114,7 +114,7 @@ async def _apply_move(db, cam_item_id: int, to_station: str, operator: str,
 
     await _set_station(db, cam_item_id, to_station)
     move_id = await _insert_move(db, cam_item_id, from_station, to_station, operator, notes, material_removed)
-    await _apply_lifespan_tracking(db, cam_item_id, from_station, to_station, material_removed)
+    await _apply_lifespan_tracking(db, cam_item_id, from_station, to_station, material_removed, exclude_from_avg)
 
     return {
         "success": True,
@@ -135,7 +135,8 @@ async def move_cam_to_station(
     operator: str = None,
     notes: str = None,
     auto_bump: bool = None,
-    material_removed: float = None
+    material_removed: float = None,
+    exclude_from_avg: bool = False
 ) -> Dict:
     """
     Move a CAM item to a new station (atomic: move, auto-bump and lifespan
@@ -151,7 +152,8 @@ async def move_cam_to_station(
             operator=operator or config.DEFAULT_OPERATOR,
             notes=notes,
             auto_bump=await _resolve_auto_bump(db, auto_bump),
-            material_removed=material_removed
+            material_removed=material_removed,
+            exclude_from_avg=exclude_from_avg
         )
         await db.commit()
         return result
@@ -166,7 +168,9 @@ async def move_set_to_station(
     set_no: int,
     to_station: str,
     operator: str = None,
-    material_removed: Optional[Dict[int, float]] = None
+    material_removed: Optional[Dict[int, float]] = None,
+    notes: Optional[Dict[int, str]] = None,
+    exclude_from_avg: Optional[Dict[int, bool]] = None
 ) -> Dict:
     """
     Move every cam in a set to a station in a single transaction.
@@ -178,6 +182,8 @@ async def move_set_to_station(
     """
     operator = operator or config.DEFAULT_OPERATOR
     material_removed = material_removed or {}
+    notes = notes or {}
+    exclude_from_avg = exclude_from_avg or {}
 
     if to_station not in config.STATIONS:
         raise ValueError(f"Invalid station: {to_station}")
@@ -226,7 +232,9 @@ async def move_set_to_station(
         for cam in to_move:
             moved.append(await _apply_move(
                 db, cam['id'], to_station, operator,
-                material_removed=material_removed.get(cam['id'])
+                material_removed=material_removed.get(cam['id']),
+                notes=notes.get(cam['id']),
+                exclude_from_avg=exclude_from_avg.get(cam['id'], False)
             ))
 
         if not moved and not bumped:
@@ -323,7 +331,7 @@ async def undo_last_move(db, cam_item_id: int) -> Dict:
 
 async def _reopen_latest_closed_lifespan(db, cam_item_id: int):
     await db.execute(
-        """UPDATE tool_lifespans SET ended_at = NULL
+        """UPDATE tool_lifespans SET ended_at = NULL, exclude_from_avg = 0
            WHERE cam_item_id = ? AND ended_at IS NOT NULL
              AND lifespan_number = (
                  SELECT MAX(lifespan_number) FROM tool_lifespans
@@ -506,7 +514,7 @@ async def get_active_lifespan(db, cam_item_id: int) -> Optional[Dict]:
     """Get the current active lifespan for a tool (ended_at IS NULL)."""
     cursor = await db.execute(
         """SELECT id, cam_item_id, lifespan_number, started_at, ended_at,
-                  total_material_removed, sharpen_count, max_material_life
+                  total_material_removed, sharpen_count, max_material_life, exclude_from_avg
            FROM tool_lifespans
            WHERE cam_item_id = ? AND ended_at IS NULL
            ORDER BY lifespan_number DESC LIMIT 1""",
@@ -514,6 +522,24 @@ async def get_active_lifespan(db, cam_item_id: int) -> Optional[Dict]:
     )
     row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+async def calculate_expected_life(db, cam_item_id: int) -> float:
+    """Average the last three closed, non-excluded cycles, padding with the seed.
+
+    The seed stays on cam_items; each new lifespan receives the rolling value.
+    Round to four decimal places, as in the original life-tracking rule.
+    """
+    seed_life = await _cam_max_life(db, cam_item_id)
+    cursor = await db.execute(
+        """SELECT total_material_removed FROM tool_lifespans
+           WHERE cam_item_id = ? AND ended_at IS NOT NULL AND exclude_from_avg = 0
+           ORDER BY lifespan_number DESC LIMIT 3""",
+        (cam_item_id,)
+    )
+    values = [row['total_material_removed'] for row in await cursor.fetchall()]
+    values.extend([seed_life] * (3 - len(values)))
+    return round(sum(values) / len(values), 4)
 
 
 async def update_lifespan_on_sharpen(db, cam_item_id: int, material_removed: float):
@@ -539,19 +565,20 @@ async def update_lifespan_on_sharpen(db, cam_item_id: int, material_removed: flo
     )
 
 
-async def close_lifespan_on_refill(db, cam_item_id: int):
+async def close_lifespan_on_refill(db, cam_item_id: int, exclude_from_avg: bool = False):
     """Close the active lifespan when a tool moves to refill."""
     await db.execute(
-        "UPDATE tool_lifespans SET ended_at = CURRENT_TIMESTAMP WHERE cam_item_id = ? AND ended_at IS NULL",
-        (cam_item_id,)
+        """UPDATE tool_lifespans SET ended_at = CURRENT_TIMESTAMP, exclude_from_avg = ?
+           WHERE cam_item_id = ? AND ended_at IS NULL""",
+        (1 if exclude_from_avg else 0, cam_item_id)
     )
 
 
 async def open_new_lifespan(db, cam_item_id: int):
-    """Open a new lifespan when a tool returns from refill."""
+    """Open a lifespan with the rolling expected life when a tool leaves refill."""
     await db.execute(
         "INSERT INTO tool_lifespans (cam_item_id, lifespan_number, max_material_life) VALUES (?, ?, ?)",
-        (cam_item_id, await _next_lifespan_number(db, cam_item_id), await _cam_max_life(db, cam_item_id))
+        (cam_item_id, await _next_lifespan_number(db, cam_item_id), await calculate_expected_life(db, cam_item_id))
     )
 
 
@@ -564,9 +591,9 @@ async def get_lifespan_forecast(db, cam_item_id: int) -> Dict:
     default_life = await _cam_max_life(db, cam_item_id)
 
     cursor = await db.execute(
-        """SELECT lifespan_number, total_material_removed, sharpen_count, started_at, ended_at
+        """SELECT lifespan_number, total_material_removed, sharpen_count, started_at, ended_at, exclude_from_avg
            FROM tool_lifespans
-           WHERE cam_item_id = ? AND ended_at IS NOT NULL
+           WHERE cam_item_id = ? AND ended_at IS NOT NULL AND exclude_from_avg = 0
            ORDER BY lifespan_number DESC
            LIMIT 3""",
         (cam_item_id,)
@@ -574,7 +601,7 @@ async def get_lifespan_forecast(db, cam_item_id: int) -> Dict:
     completed = [dict(r) for r in await cursor.fetchall()]
 
     cursor = await db.execute(
-        "SELECT COUNT(*) as cnt FROM tool_lifespans WHERE cam_item_id = ? AND ended_at IS NOT NULL",
+        "SELECT COUNT(*) as cnt FROM tool_lifespans WHERE cam_item_id = ? AND ended_at IS NOT NULL AND exclude_from_avg = 0",
         (cam_item_id,)
     )
     completed_count = (await cursor.fetchone())['cnt']
@@ -588,7 +615,8 @@ async def get_lifespan_forecast(db, cam_item_id: int) -> Dict:
             "sharpen_count": current['sharpen_count'],
             "material_remaining": round(max(0, max_life - total_removed), 3),
             "percent_life_used": round((total_removed / max_life) * 100, 1) if max_life > 0 else 0,
-            "max_material_life": max_life
+            "max_material_life": max_life,
+            "early_refill_required": total_removed < max_life * 0.9
         }
     else:
         max_life = default_life
@@ -598,7 +626,8 @@ async def get_lifespan_forecast(db, cam_item_id: int) -> Dict:
             "sharpen_count": 0,
             "material_remaining": round(max_life, 3),
             "percent_life_used": 0.0,
-            "max_material_life": max_life
+            "max_material_life": max_life,
+            "early_refill_required": max_life > 0
         }
 
     # Average removal per sharpen: blend current lifespan (60%) with history (40%)
@@ -630,6 +659,7 @@ async def get_lifespan_forecast(db, cam_item_id: int) -> Dict:
 
     return {
         "current_lifespan": current_info,
+        "expected_life": await calculate_expected_life(db, cam_item_id),
         "forecast": {
             "avg_removal_per_sharpen": round(avg_per_sharpen, 4) if avg_per_sharpen else None,
             "estimated_sharpenings_remaining": est_remaining,
