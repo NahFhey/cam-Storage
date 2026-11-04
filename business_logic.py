@@ -354,7 +354,7 @@ def calculate_priority(available_sets: int, refill_count: int, priority_level: s
     - Priority score = base + adjustments:
       - If all_in_sharpen: +100 (massive boost to top of list)
       - If no cams in cabinet AND at least one active set: +2
-      - If available_sets == 1: +1
+      - If available_sets (sets with every cam in cabinet) == 1: +1
       - If available_sets == 0: +2
       - If has_blocked_position (a cam_no has all instances in refill/sharpen): +100
       - If refill_count >= 3: +1
@@ -390,7 +390,11 @@ _JOB_RANKING_SQL = """
             j.title,
             j.priority_level,
             COUNT(c.id) as total_count,
-            COUNT(DISTINCT CASE WHEN c.status_station NOT IN ('refill', 'sharpen') THEN c.set_no END) as available_sets,
+            -- A set is ready only when every cam in it is in the cabinet.
+            (SELECT COUNT(*) FROM (
+                SELECT s.set_no FROM cam_items s WHERE s.job_id = j.id GROUP BY s.set_no
+                HAVING COUNT(*) = SUM(CASE WHEN s.status_station = 'cabinet' THEN 1 ELSE 0 END)
+            )) as available_sets,
             COUNT(CASE WHEN c.status_station = 'active' THEN 1 END) as active_count,
             COUNT(CASE WHEN c.status_station = 'sharpen' THEN 1 END) as sharpen_count,
             COUNT(CASE WHEN c.status_station = 'cabinet' THEN 1 END) as cabinet_count,

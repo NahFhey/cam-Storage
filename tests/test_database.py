@@ -376,37 +376,34 @@ class TestBusinessLogic:
         # cam1 has active in set 2, cam2 has cabinet in set 1 => not blocked
         assert job_entry['has_blocked_position'] is False
 
-    async def test_hot_list_available_sets_excludes_sharpen(self, test_db):
-        """Test that available_sets excludes sets where all cams are in sharpen or refill"""
-        from business_logic import generate_hot_list
+    async def test_hot_list_available_sets_counts_only_full_cabinet_sets(self, test_db):
+        """A set is ready only when every cam in it is in the cabinet."""
+        from business_logic import generate_all_jobs_ranked
 
-        cursor = await test_db.execute(
-            "INSERT INTO jobs (s_number, title, priority_level) VALUES (?, ?, ?)",
-            ("4002", "Sharpen Excluded Job", "low")
-        )
-        job_id = cursor.lastrowid
+        async def job(s_number, cams):
+            cursor = await test_db.execute(
+                "INSERT INTO jobs (s_number, title, priority_level) VALUES (?, ?, ?)",
+                (s_number, "Ready sets " + s_number, "low")
+            )
+            for set_no, cam_no, station in cams:
+                await test_db.execute(
+                    "INSERT INTO cam_items (job_id, set_no, cam_no, status_station) VALUES (?, ?, ?, ?)",
+                    (cursor.lastrowid, set_no, cam_no, station)
+                )
 
-        # Set 1: all sharpen (should NOT count as available)
-        await test_db.execute(
-            "INSERT INTO cam_items (job_id, set_no, cam_no, status_station) VALUES (?, ?, ?, ?)",
-            (job_id, 1, 1, "sharpen")
-        )
-        # Set 2: one sharpen + one cabinet (should count as available)
-        await test_db.execute(
-            "INSERT INTO cam_items (job_id, set_no, cam_no, status_station) VALUES (?, ?, ?, ?)",
-            (job_id, 2, 1, "sharpen")
-        )
-        await test_db.execute(
-            "INSERT INTO cam_items (job_id, set_no, cam_no, status_station) VALUES (?, ?, ?, ?)",
-            (job_id, 2, 2, "cabinet")
-        )
+        # Two cabinet cams in one set: one ready set; the all-sharpen set is not ready
+        await job("4002", [(1, 1, "sharpen"), (1, 2, "sharpen"), (2, 1, "cabinet"), (2, 2, "cabinet")])
+        # Two cabinet cams in different sets, each set incomplete: none ready
+        await job("4003", [(1, 1, "cabinet"), (1, 2, "active"), (2, 1, "sharpen"), (2, 2, "cabinet")])
+        # A full set on the press is in use, not ready
+        await job("4004", [(1, 1, "active"), (1, 2, "active"), (2, 1, "cabinet"), (2, 2, "cabinet"),
+                           (3, 1, "cabinet"), (3, 2, "cabinet")])
         await test_db.commit()
 
-        hot_list = await generate_hot_list(test_db)
-        job_entry = next(item for item in hot_list if item['s_number'] == "4002")
-
-        # Only set 2 should be available (has a cabinet cam)
-        assert job_entry['available_sets'] == 1
+        ready = {item['s_number']: item['available_sets'] for item in await generate_all_jobs_ranked(test_db)}
+        assert ready["4002"] == 1
+        assert ready["4003"] == 0
+        assert ready["4004"] == 2
 
     def test_calculate_priority_blocked_position_boost(self):
         """Test calculate_priority gives +100 for blocked position"""
