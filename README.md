@@ -390,7 +390,7 @@ pytest tests/ -v
 
 ## License
 
-Proprietary - Internal use only
+All rights reserved.
 
 ## Support
 
